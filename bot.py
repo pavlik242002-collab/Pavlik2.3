@@ -1422,4 +1422,98 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response = f"Администраторы:\n{admins_list}"
         await update.message.reply_text(response, reply_markup=default_reply_markup)
         log_request(user_id, user_input, response)
-        logger.info(f"Администратор {user_id} запросил список
+        logger.info(f"Администратор {user_id} запросил список администраторов.")
+        handled = True
+
+    # Обработка произвольных текстовых запросов (вопросов к AI)
+    if not handled:
+        # Проверка, если пользователь в режиме загрузки или навигации
+        if context.user_data.get('awaiting_upload') or context.user_data.get('awaiting_delete'):
+            response = "Пожалуйста, завершите текущую операцию или вернитесь в главное меню."
+            await update.message.reply_text(response, reply_markup=default_reply_markup)
+            log_request(user_id, user_input, response)
+            return
+
+        # Подготовка истории переписки
+        if user_id not in histories:
+            histories[user_id] = {"messages": []}
+
+        # Добавление пользовательского сообщения в историю
+        histories[user_id]["messages"].append({"role": "user", "content": user_input})
+
+        # Формирование контекста для AI
+        context_messages = [
+            {"role": "system", "content": system_prompt},
+            *histories[user_id]["messages"][-10:]  # Ограничение на последние 10 сообщений
+        ]
+
+        # Добавление базы знаний в промпт, если она есть
+        if KNOWLEDGE_BASE:
+            knowledge_context = "\n".join(KNOWLEDGE_BASE)
+            context_messages.append({"role": "system", "content": f"База знаний:\n{knowledge_context}"})
+
+        # Выполнение веб-поиска, если запрос требует актуальных данных
+        if "текущий" in user_input.lower() or "новости" in user_input.lower() or "погода" in user_input.lower():
+            search_results = web_search(user_input)
+            context_messages.append({"role": "system", "content": f"Результаты поиска:\n{search_results}"})
+
+        try:
+            # Запрос к AI (Grok от xAI)
+            response = client.chat.completions.create(
+                model="grok",
+                messages=context_messages,
+                max_tokens=500,
+                temperature=0.7
+            )
+            ai_response = response.choices[0].message.content.strip()
+            histories[user_id]["messages"].append({"role": "assistant", "content": ai_response})
+
+            # Ограничение длины истории
+            if len(histories[user_id]["messages"]) > 20:
+                histories[user_id]["messages"] = histories[user_id]["messages"][-20:]
+
+            # Отправка ответа пользователю
+            await update.message.reply_text(ai_response, reply_markup=default_reply_markup)
+            log_request(user_id, user_input, ai_response)
+            logger.info(f"AI ответил пользователю {user_id}: {ai_response[:50]}...")
+        except Exception as e:
+            response = "Ошибка при обработке запроса. Попробуйте снова."
+            await update.message.reply_text(response, reply_markup=default_reply_markup)
+            log_request(user_id, user_input, response)
+            logger.error(f"Ошибка AI для user_id {user_id}: {str(e)}")
+
+
+def main() -> None:
+    """Запускает Telegram-бота."""
+    try:
+        # Инициализация базы данных
+        init_db()
+        logger.info("База данных инициализирована.")
+
+        # Создание приложения
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+        # Регистрация обработчиков команд
+        application.add_handler(CommandHandler("start", send_welcome))
+        application.add_handler(CommandHandler("learn", handle_learn))
+        application.add_handler(CommandHandler("forget", handle_forget))
+        application.add_handler(CommandHandler("check_users", handle_check_users))
+        application.add_handler(CommandHandler("getfile", get_file))
+
+        # Регистрация обработчиков сообщений
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
+        # Регистрация обработчика callback-запросов
+        application.add_handler(CallbackQueryHandler(handle_callback_query))
+
+        # Запуск бота
+        logger.info("Бот запущен.")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {str(e)}")
+        raise
+
+
+if __name__ == '__main__':
+    main()
