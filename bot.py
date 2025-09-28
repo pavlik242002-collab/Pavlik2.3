@@ -16,7 +16,6 @@ from urllib.parse import quote
 from openai import OpenAI
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from flask import Flask, request
 
 # Настройка логирования
 logging.basicConfig(
@@ -46,9 +45,6 @@ client = OpenAI(
     base_url="https://api.x.ai/v1",
     api_key=XAI_TOKEN,
 )
-
-# Flask app для webhook
-flask_app = Flask(__name__)
 
 # Словарь федеральных округов
 FEDERAL_DISTRICTS = {
@@ -108,12 +104,33 @@ def get_db_connection():
         logger.error(f"Ошибка подключения к базе данных: {str(e)}")
         raise
 
+def check_table_exists(table_name: str) -> bool:
+    """Проверяет, существует ли таблица в базе данных."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name = %s
+            );
+        """, (table_name,))
+        exists = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        logger.info(f"Таблица {table_name} {'существует' if exists else 'не существует'}.")
+        return exists
+    except Exception as e:
+        logger.error(f"Ошибка при проверке таблицы {table_name}: {str(e)}")
+        return False
+
 def init_db():
     """Инициализирует таблицы в БД."""
     try:
         conn = get_db_connection()
         logger.info("Соединение с базой данных установлено.")
         cur = conn.cursor()
+        # Создание таблицы allowed_admins
         cur.execute("""
             CREATE TABLE IF NOT EXISTS allowed_admins (
                 id SERIAL PRIMARY KEY,
@@ -121,6 +138,7 @@ def init_db():
             );
         """)
         logger.info("Таблица allowed_admins создана или уже существует.")
+        # Создание таблицы allowed_users
         cur.execute("""
             CREATE TABLE IF NOT EXISTS allowed_users (
                 id SERIAL PRIMARY KEY,
@@ -128,6 +146,7 @@ def init_db():
             );
         """)
         logger.info("Таблица allowed_users создана или уже существует.")
+        # Создание таблицы user_profiles
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_profiles (
                 user_id INTEGER PRIMARY KEY,
@@ -137,6 +156,7 @@ def init_db():
             );
         """)
         logger.info("Таблица user_profiles создана или уже существует.")
+        # Создание таблицы user_requests
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_requests (
                 id SERIAL PRIMARY KEY,
@@ -147,7 +167,7 @@ def init_db():
             );
         """)
         logger.info("Таблица user_requests создана или уже существует.")
-        # Инициализируем с дефолтным админом (замените на свой Telegram ID)
+        # Инициализируем с дефолтным админом
         default_admin = 123456789  # Замените на ваш Telegram user_id
         cur.execute("INSERT INTO allowed_admins (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING;", (default_admin,))
         logger.info(f"Добавлен дефолтный админ с user_id {default_admin}.")
@@ -162,6 +182,9 @@ def init_db():
 def log_request(user_id: int, request_text: str, response_text: str) -> None:
     """Сохраняет запрос и ответ в таблицу user_requests."""
     try:
+        if not check_table_exists("user_requests"):
+            logger.error("Таблица user_requests не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
@@ -178,6 +201,9 @@ def log_request(user_id: int, request_text: str, response_text: str) -> None:
 def load_allowed_admins() -> List[int]:
     """Загружает список ID администраторов из БД."""
     try:
+        if not check_table_exists("allowed_admins"):
+            logger.error("Таблица allowed_admins не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT user_id FROM allowed_admins;")
@@ -193,6 +219,9 @@ def load_allowed_admins() -> List[int]:
 def save_allowed_admins(allowed_admins: List[int]) -> None:
     """Сохраняет список ID администраторов в БД."""
     try:
+        if not check_table_exists("allowed_admins"):
+            logger.error("Таблица allowed_admins не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("DELETE FROM allowed_admins;")
@@ -208,6 +237,9 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
 def load_allowed_users() -> List[int]:
     """Загружает список ID разрешённых пользователей из БД."""
     try:
+        if not check_table_exists("allowed_users"):
+            logger.error("Таблица allowed_users не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT user_id FROM allowed_users;")
@@ -223,6 +255,9 @@ def load_allowed_users() -> List[int]:
 def save_allowed_users(allowed_users: List[int]) -> None:
     """Сохраняет список ID разрешённых пользователей в БД."""
     try:
+        if not check_table_exists("allowed_users"):
+            logger.error("Таблица allowed_users не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("DELETE FROM allowed_users;")
@@ -238,6 +273,9 @@ def save_allowed_users(allowed_users: List[int]) -> None:
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
     """Загружает профили пользователей из БД."""
     try:
+        if not check_table_exists("user_profiles"):
+            logger.error("Таблица user_profiles не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM user_profiles;")
@@ -253,6 +291,9 @@ def load_user_profiles() -> Dict[int, Dict[str, str]]:
 def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     """Сохраняет профили пользователей в БД."""
     try:
+        if not check_table_exists("user_profiles"):
+            logger.error("Таблица user_profiles не существует. Инициализируем базу данных.")
+            init_db()
         conn = get_db_connection()
         cur = conn.cursor()
         for user_id, data in profiles.items():
@@ -1364,76 +1405,3 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if need_search:
             logger.info(f"Выполняется поиск для запроса: {user_input}")
             search_results_json = web_search(user_input)
-            try:
-                results = json.loads(search_results_json)
-                if isinstance(results, list):
-                    extracted_text = "\n".join(
-                        [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
-                else:
-                    extracted_text = search_results_json
-                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты: {extracted_text}"})
-                logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
-            except json.JSONDecodeError:
-                histories[chat_id]["messages"].append(
-                    {"role": "system", "content": f"Ошибка поиска: {search_results_json}"})
-
-        histories[chat_id]["messages"].append({"role": "user", "content": user_input})
-        if len(histories[chat_id]["messages"]) > 20:
-            histories[chat_id]["messages"] = histories[chat_id]["messages"][:1] + histories[chat_id]["messages"][-19:]
-
-        messages = histories[chat_id]["messages"]
-
-        models_to_try = ["grok-3-mini", "grok-beta"]
-        response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
-
-        for model in models_to_try:
-            try:
-                completion = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.7,
-                    stream=False
-                )
-                response_text = completion.choices[0].message.content.strip()
-                logger.info(f"Ответ модели {model} для user_id {user_id}: {response_text}")
-                break
-            except openai.AuthenticationError as auth_err:
-                logger.error(f"Ошибка авторизации для {model}: {str(auth_err)}")
-                response_text = "Ошибка авторизации: неверный API-ключ. Проверьте XAI_TOKEN."
-                break
-            except openai.APIError as api_err:
-                if "403" in str(api_err):
-                    logger.warning(f"403 Forbidden для {model}. Пробуем следующую модель.")
-                    continue
-                logger.error(f"Ошибка API для {model}: {str(api_err)}")
-                response_text = f"Ошибка API: {str(api_err)}"
-                break
-            except openai.RateLimitError as rate_err:
-                logger.error(f"Превышен лимит для {model}: {str(rate_err)}")
-                response_text = "Превышен лимит запросов. Попробуйте позже."
-                break
-            except Exception as e:
-                logger.error(f"Неизвестная ошибка для {model}: {str(e)}")
-                response_text = f"Неизвестная ошибка: {str(e)}"
-                break
-        else:
-            logger.error("Все модели недоступны (403). Проверьте токен и подписку.")
-            response_text = "Все модели недоступны (403). Обновите SuperGrok или X Premium+."
-
-        user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
-        final_response = f"{user_name}, {response_text}"
-        histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
-        await update.message.reply_text(final_response, reply_markup=default_reply_markup)
-        log_request(user_id, user_input, final_response)
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Update {update} caused error {context.error}")
-    if update and update.message:
-        response = "Произошла ошибка, попробуйте позже."
-        await update.message.reply_text(response)
-        log_request(update.effective_user.id if update.effective_user else 0, "error", response)
-
-@flask_app.route('/webhook', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(), application.bot)
-    application.process
