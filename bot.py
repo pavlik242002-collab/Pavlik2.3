@@ -318,14 +318,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ... (основной код)
     # После получения response_text:
     log_request(user_id, user_input, response_text)  # Логируем запрос и ответ
-    # ...
-
-
-# Главная функция (без изменений, кроме init_db выше)
 def main() -> None:
-
-
-# ... (ваш код)
-
 if __name__ == "__main__":
     main()
