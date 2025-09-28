@@ -275,7 +275,7 @@ def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     """Возвращает список файлов в папке на Яндекс.Диске (с фильтром по расширениям)."""
     folder_path = folder_path.rstrip('/')
     items = list_yandex_disk_items(folder_path, item_type='file')
-    supported_extensions = ('.pdf', '.doc', '.docx', '.xls', '.xlsx')
+    supported_extensions = ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')
     files = [item for item in items if item['name'].lower().endswith(supported_extensions)]
     logger.info(f"Найдено {len(files)} файлов в папке {folder_path}: {[item['name'] for item in files]}")
     return files
@@ -513,8 +513,8 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
-    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
+    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
         logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
         return
 
@@ -563,8 +563,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     document = update.message.document
     file_name = document.file_name
-    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
+    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
         return
 
     file_size = document.file_size / (1024 * 1024)
@@ -785,8 +785,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         file_path = f"{region_folder.rstrip('/')}/{file_name}"
 
         if action == "download":
-            if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-                await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.",
+            if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+                await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.",
                                                reply_markup=default_reply_markup)
                 logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
                 return
