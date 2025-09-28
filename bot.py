@@ -980,6 +980,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
+    handled = False
+
     # Обработка команд меню
     if user_input == "Документы для РО":
         context.user_data['current_mode'] = 'documents_nav'
@@ -990,14 +992,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error(f"Не удалось создать папку /documents/ для пользователя {user_id}.")
             return
         await show_current_docs(update, context)
-        return
+        handled = True
 
     if user_input == "Архив документов РО":
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
         context.user_data.pop('file_list', None)
         await show_file_list(update, context)
-        return
+        handled = True
 
     if user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
@@ -1017,7 +1019,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('file_list', None)
         await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
-        return
+        handled = True
 
     if user_input == "Загрузить файл":
         profile = USER_PROFILES.get(user_id)
@@ -1034,7 +1036,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         context.user_data['awaiting_upload'] = True
         logger.info(f"Пользователь {user_id} начал загрузку файла.")
-        return
+        handled = True
 
     if user_input == "Удалить файл":
         if user_id not in ALLOWED_ADMINS:
@@ -1047,11 +1049,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('current_path', None)
         context.user_data.pop('file_list', None)
         await show_file_list(update, context, for_deletion=True)
-        return
+        handled = True
 
     if user_input == "Назад":
         await show_main_menu(update, context)
-        return
+        handled = True
 
     # Обработка навигации по documents
     if context.user_data.get('current_mode') == 'documents_nav':
@@ -1070,11 +1072,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"Не удалось создать папку {context.user_data['current_path']} для пользователя {user_id}.")
                 return
             await show_current_docs(update, context)
-            return
+            handled = True
         elif user_input == 'В главное меню':
             logger.info(f"Пользователь {user_id} вернулся в главное меню из {current_path}")
             await show_main_menu(update, context)
-            return
+            handled = True
         elif user_input == 'Назад' and current_path != '/documents/':
             context.user_data.pop('file_list', None)
             parts = current_path.rstrip('/').split('/')
@@ -1082,11 +1084,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['current_path'] = new_path
             logger.info(f"Пользователь {user_id} вернулся назад в {new_path}")
             await show_current_docs(update, context, is_return=True)
-            return
-        else:
-            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=default_reply_markup)
-            await show_current_docs(update, context)
-            return
+            handled = True
 
     if context.user_data.get('awaiting_user_id'):
         try:
@@ -1112,11 +1110,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                                 reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} назначил администратора {new_id}.")
             context.user_data.pop('awaiting_user_id', None)
-            return
+            handled = True
         except ValueError:
             await update.message.reply_text("Ошибка: user_id должен быть числом.", reply_markup=default_reply_markup)
             logger.error(f"Ошибка: Неверный формат user_id от {user_id}.")
-            return
+            handled = True
 
     if user_input == "Добавить пользователя":
         if user_id not in ALLOWED_ADMINS:
@@ -1128,7 +1126,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                         reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_user'
         logger.info(f"Администратор {user_id} запросил добавление пользователя.")
-        return
+        handled = True
 
     if user_input == "Добавить администратора":
         if user_id not in ALLOWED_ADMINS:
@@ -1140,7 +1138,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                         reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_admin'
         logger.info(f"Администратор {user_id} запросил добавление администратора.")
-        return
+        handled = True
 
     if user_input == "Список пользователей":
         if user_id not in ALLOWED_ADMINS:
@@ -1154,7 +1152,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS])
         await update.message.reply_text(f"Разрешённые пользователи:\n{users_list}", reply_markup=default_reply_markup)
         logger.info(f"Администратор {user_id} запросил список пользователей.")
-        return
+        handled = True
 
     if user_input == "Список администраторов":
         if user_id not in ALLOWED_ADMINS:
@@ -1168,90 +1166,92 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
         await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
         logger.info(f"Администратор {user_id} запросил список администраторов.")
-        return
+        handled = True
 
-    # Обработка текстового сообщения через API
-    if chat_id not in histories:
-        histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
+    # Если сообщение не было обработано как специальная команда или состояние, обрабатываем как запрос к AI
+    if not handled:
+        # Обработка текстового сообщения через API
+        if chat_id not in histories:
+            histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-    # Добавляем базу знаний в контекст для всех пользователей
-    global KNOWLEDGE_BASE
-    if KNOWLEDGE_BASE:
-        knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
-        histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
-        logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
+        # Добавляем базу знаний в контекст для всех пользователей
+        global KNOWLEDGE_BASE
+        if KNOWLEDGE_BASE:
+            knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
+            histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
+            logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
 
-    # Проверка необходимости веб-поиска
-    need_search = any(word in user_input.lower() for word in [
-        "актуальная информация", "последние новости", "найди в интернете", "поиск",
-        "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о",
-        "вскс", "спасатели", "корпус спасателей"
-    ])
+        # Проверка необходимости веб-поиска
+        need_search = any(word in user_input.lower() for word in [
+            "актуальная информация", "последние новости", "найди в интернете", "поиск",
+            "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о",
+            "вскс", "спасатели", "корпус спасателей"
+        ])
 
-    if need_search:
-        logger.info(f"Выполняется поиск для запроса: {user_input}")
-        search_results_json = web_search(user_input)
-        try:
-            results = json.loads(search_results_json)
-            if isinstance(results, list):
-                extracted_text = "\n".join(
-                    [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
-            else:
-                extracted_text = search_results_json
-            histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты: {extracted_text}"})
-            logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
-        except json.JSONDecodeError:
-            histories[chat_id]["messages"].append(
-                {"role": "system", "content": f"Ошибка поиска: {search_results_json}"})
+        if need_search:
+            logger.info(f"Выполняется поиск для запроса: {user_input}")
+            search_results_json = web_search(user_input)
+            try:
+                results = json.loads(search_results_json)
+                if isinstance(results, list):
+                    extracted_text = "\n".join(
+                        [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
+                else:
+                    extracted_text = search_results_json
+                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты: {extracted_text}"})
+                logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
+            except json.JSONDecodeError:
+                histories[chat_id]["messages"].append(
+                    {"role": "system", "content": f"Ошибка поиска: {search_results_json}"})
 
-    histories[chat_id]["messages"].append({"role": "user", "content": user_input})
-    if len(histories[chat_id]["messages"]) > 20:
-        histories[chat_id]["messages"] = histories[chat_id]["messages"][:1] + histories[chat_id]["messages"][-19:]
+        histories[chat_id]["messages"].append({"role": "user", "content": user_input})
+        if len(histories[chat_id]["messages"]) > 20:
+            histories[chat_id]["messages"] = histories[chat_id]["messages"][:1] + histories[chat_id]["messages"][-19:]
 
-    messages = histories[chat_id]["messages"]
+        messages = histories[chat_id]["messages"]
 
-    # Запрос к API
-    models_to_try = ["grok-3-mini", "grok-beta"]
-    response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
+        # Запрос к API
+        models_to_try = ["grok-3-mini", "grok-beta"]
+        response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
 
-    for model in models_to_try:
-        try:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.7,
-                stream=False
-            )
-            response_text = completion.choices[0].message.content.strip()
-            logger.info(f"Ответ модели {model} для user_id {user_id}: {response_text}")
-            break
-        except openai.AuthenticationError as auth_err:
-            logger.error(f"Ошибка авторизации для {model}: {str(auth_err)}")
-            response_text = "Ошибка авторизации: неверный API-ключ. Проверьте XAI_TOKEN."
-            break
-        except openai.APIError as api_err:
-            if "403" in str(api_err):
-                logger.warning(f"403 Forbidden для {model}. Пробуем следующую модель.")
-                continue
-            logger.error(f"Ошибка API для {model}: {str(api_err)}")
-            response_text = f"Ошибка API: {str(api_err)}"
-            break
-        except openai.RateLimitError as rate_err:
-            logger.error(f"Превышен лимит для {model}: {str(rate_err)}")
-            response_text = "Превышен лимит запросов. Попробуйте позже."
-            break
-        except Exception as e:
-            logger.error(f"Неизвестная ошибка для {model}: {str(e)}")
-            response_text = f"Неизвестная ошибка: {str(e)}"
-            break
-    else:
-        logger.error("Все модели недоступны (403). Проверьте токен и подписку.")
-        response_text = "Все модели недоступны (403). Обновите SuperGrok или X Premium+."
+        for model in models_to_try:
+            try:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                    stream=False
+                )
+                response_text = completion.choices[0].message.content.strip()
+                logger.info(f"Ответ модели {model} для user_id {user_id}: {response_text}")
+                break
+            except openai.AuthenticationError as auth_err:
+                logger.error(f"Ошибка авторизации для {model}: {str(auth_err)}")
+                response_text = "Ошибка авторизации: неверный API-ключ. Проверьте XAI_TOKEN."
+                break
+            except openai.APIError as api_err:
+                if "403" in str(api_err):
+                    logger.warning(f"403 Forbidden для {model}. Пробуем следующую модель.")
+                    continue
+                logger.error(f"Ошибка API для {model}: {str(api_err)}")
+                response_text = f"Ошибка API: {str(api_err)}"
+                break
+            except openai.RateLimitError as rate_err:
+                logger.error(f"Превышен лимит для {model}: {str(rate_err)}")
+                response_text = "Превышен лимит запросов. Попробуйте позже."
+                break
+            except Exception as e:
+                logger.error(f"Неизвестная ошибка для {model}: {str(e)}")
+                response_text = f"Неизвестная ошибка: {str(e)}"
+                break
+        else:
+            logger.error("Все модели недоступны (403). Проверьте токен и подписку.")
+            response_text = "Все модели недоступны (403). Обновите SuperGrok или X Premium+."
 
-    user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
-    final_response = f"{user_name}, {response_text}"
-    histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
-    await update.message.reply_text(final_response, reply_markup=default_reply_markup)
+        user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
+        final_response = f"{user_name}, {response_text}"
+        histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
+        await update.message.reply_text(final_response, reply_markup=default_reply_markup)
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
