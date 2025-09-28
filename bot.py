@@ -383,15 +383,31 @@ def initialize_yandex_folders() -> None:
     docs_path = '/documents'
     if not create_yandex_folder(docs_path):
         logger.error(f"Не удалось создать папку {docs_path}")
+    users_path = '/users'
+    if not create_yandex_folder(users_path):
+        logger.error(f"Не удалось создать папку {users_path}")
 
-# Обработчик /start
+# Функция создания папки для пользователя
+def create_user_folder(user_id: int) -> bool:
+    path = f"/users/{user_id}"
+    return create_yandex_folder(path)
+
+# Обработчик /start с регистрацией
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Доступ запрещён. Обратитесь к администратору.", reply_markup=default_reply_markup)
-        return
-    await update.message.reply_text("Добро пожаловать! Напишите сообщение для чата с AI.", reply_markup=default_reply_markup)
-    logger.info(f"Пользователь {user_id} запустил бота.")
+        # Автоматическая регистрация
+        ALLOWED_USERS.append(user_id)
+        save_allowed_users(ALLOWED_USERS)
+        if create_user_folder(user_id):
+            logger.info(f"Папка для пользователя {user_id} создана на Yandex Disk.")
+        else:
+            logger.error(f"Ошибка создания папки для пользователя {user_id}.")
+        await update.message.reply_text("Вы успешно зарегистрированы! Напишите сообщение для чата с AI.", reply_markup=default_reply_markup)
+        logger.info(f"Новый пользователь {user_id} зарегистрирован.")
+    else:
+        await update.message.reply_text("Добро пожаловать! Напишите сообщение для чата с AI.", reply_markup=default_reply_markup)
+        logger.info(f"Пользователь {user_id} запустил бота.")
 
 # Обработчик /getfile
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -441,76 +457,6 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     reply_markup = InlineKeyboardMarkup(buttons)
     await update.message.reply_text("Выберите факт для удаления:", reply_markup=reply_markup)
     logger.info(f"Администратор {user_id} запросил удаление факта.")
-
-# Обработчик /adduser
-async def handle_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
-    if user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Только администраторы могут добавлять пользователей.", reply_markup=default_reply_markup)
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("Укажите ID пользователя: /adduser <ID>", reply_markup=default_reply_markup)
-        return
-    try:
-        new_user_id = int(args[0])
-        if new_user_id not in ALLOWED_USERS:
-            ALLOWED_USERS.append(new_user_id)
-            save_allowed_users(ALLOWED_USERS)
-            await update.message.reply_text(f"Пользователь {new_user_id} добавлен.", reply_markup=default_reply_markup)
-            logger.info(f"Администратор {user_id} добавил пользователя {new_user_id}")
-        else:
-            await update.message.reply_text(f"Пользователь {new_user_id} уже в списке.", reply_markup=default_reply_markup)
-    except ValueError:
-        await update.message.reply_text("Неверный ID пользователя.", reply_markup=default_reply_markup)
-
-# Обработчик /deluser
-async def handle_deluser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
-    if user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Только администраторы могут удалять пользователей.", reply_markup=default_reply_markup)
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("Укажите ID пользователя: /deluser <ID>", reply_markup=default_reply_markup)
-        return
-    try:
-        del_user_id = int(args[0])
-        if del_user_id in ALLOWED_USERS:
-            ALLOWED_USERS.remove(del_user_id)
-            save_allowed_users(ALLOWED_USERS)
-            await update.message.reply_text(f"Пользователь {del_user_id} удалён.", reply_markup=default_reply_markup)
-            logger.info(f"Администратор {user_id} удалил пользователя {del_user_id}")
-        else:
-            await update.message.reply_text(f"Пользователь {del_user_id} не найден.", reply_markup=default_reply_markup)
-    except ValueError:
-        await update.message.reply_text("Неверный ID пользователя.", reply_markup=default_reply_markup)
-
-# Обработчик /listusers
-async def handle_listusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
-    if user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Только администраторы могут просматривать список пользователей.", reply_markup=default_reply_markup)
-        return
-    if not ALLOWED_USERS:
-        await update.message.reply_text("Список пользователей пуст.", reply_markup=default_reply_markup)
-        return
-    users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS])
-    await update.message.reply_text(f"Пользователи:\n{users_list}", reply_markup=default_reply_markup)
-    logger.info(f"Администратор {user_id} запросил список пользователей.")
-
-# Обработчик /listadmins
-async def handle_listadmins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
-    if user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Только администраторы могут просматривать список администраторов.", reply_markup=default_reply_markup)
-        return
-    if not ALLOWED_ADMINS:
-        await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
-        return
-    admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
-    await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
-    logger.info(f"Администратор {user_id} запросил список администраторов.")
 
 # Обработчик документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -635,6 +581,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Доступ запрещён.", reply_markup=default_reply_markup)
         return
 
+    # Обработка админ-команд (как в оригинале)
+    if user_id in ALLOWED_ADMINS and user_input.lower().startswith("adduser"):
+        try:
+            new_user_id = int(user_input.split()[1])
+            if new_user_id not in ALLOWED_USERS:
+                ALLOWED_USERS.append(new_user_id)
+                save_allowed_users(ALLOWED_USERS)
+                if create_user_folder(new_user_id):
+                    logger.info(f"Папка для пользователя {new_user_id} создана на Yandex Disk.")
+                else:
+                    logger.error(f"Ошибка создания папки для пользователя {new_user_id}.")
+                await update.message.reply_text(f"Пользователь {new_user_id} добавлен.", reply_markup=default_reply_markup)
+                logger.info(f"Администратор {user_id} добавил пользователя {new_user_id}")
+            else:
+                await update.message.reply_text(f"Пользователь {new_user_id} уже в списке.", reply_markup=default_reply_markup)
+        except (IndexError, ValueError):
+            await update.message.reply_text("Укажите ID пользователя: adduser <ID>", reply_markup=default_reply_markup)
+        return
+    if user_id in ALLOWED_ADMINS and user_input.lower().startswith("deluser"):
+        try:
+            del_user_id = int(user_input.split()[1])
+            if del_user_id in ALLOWED_USERS:
+                ALLOWED_USERS.remove(del_user_id)
+                save_allowed_users(ALLOWED_USERS)
+                await update.message.reply_text(f"Пользователь {del_user_id} удалён.", reply_markup=default_reply_markup)
+                logger.info(f"Администратор {user_id} удалил пользователя {del_user_id}")
+            else:
+                await update.message.reply_text(f"Пользователь {del_user_id} не найден.", reply_markup=default_reply_markup)
+        except (IndexError, ValueError):
+            await update.message.reply_text("Укажите ID пользователя: deluser <ID>", reply_markup=default_reply_markup)
+        return
+    if user_id in ALLOWED_ADMINS and user_input.lower() == "listusers":
+        if not ALLOWED_USERS:
+            await update.message.reply_text("Список пользователей пуст.", reply_markup=default_reply_markup)
+            return
+        users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS])
+        await update.message.reply_text(f"Пользователи:\n{users_list}", reply_markup=default_reply_markup)
+        logger.info(f"Администратор {user_id} запросил список пользователей.")
+        return
+    if user_id in ALLOWED_ADMINS and user_input.lower() == "listadmins":
+        if not ALLOWED_ADMINS:
+            await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
+            return
+        admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
+        await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
+        logger.info(f"Администратор {user_id} запросил список администраторов.")
+        return
+
     # Обработка текстового сообщения через API
     if chat_id not in histories:
         histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
@@ -733,10 +727,6 @@ def main() -> None:
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(CommandHandler("learn", handle_learn))
         app.add_handler(CommandHandler("forget", handle_forget))
-        app.add_handler(CommandHandler("adduser", handle_adduser))
-        app.add_handler(CommandHandler("deluser", handle_deluser))
-        app.add_handler(CommandHandler("listusers", handle_listusers))
-        app.add_handler(CommandHandler("listadmins", handle_listadmins))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
