@@ -60,6 +60,7 @@ FEDERAL_DISTRICTS = {
     # ... (ваш словарь, без изменений)
 }
 
+
 # Функции для работы с Postgres
 def get_db_connection():
     """Создаёт соединение с Postgres."""
@@ -69,6 +70,7 @@ def get_db_connection():
     except Exception as e:
         logger.error(f"Ошибка подключения к БД: {str(e)}")
         raise
+
 
 def init_db():
     """Инициализирует таблицы в БД, если они не существуют."""
@@ -119,8 +121,10 @@ def init_db():
         cur.close()
         conn.close()
 
+
 # Вызываем инициализацию БД при запуске
 init_db()
+
 
 # Функции для работы с администраторами (теперь с БД)
 def load_allowed_admins() -> List[int]:
@@ -143,6 +147,7 @@ def load_allowed_admins() -> List[int]:
         cur.close()
         conn.close()
 
+
 def save_allowed_admins(allowed_admins: List[int]) -> None:
     conn = get_db_connection()
     cur = conn.cursor()
@@ -158,6 +163,7 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
         cur.close()
         conn.close()
 
+
 # Аналогично для allowed_users
 def load_allowed_users() -> List[int]:
     conn = get_db_connection()
@@ -171,6 +177,7 @@ def load_allowed_users() -> List[int]:
     finally:
         cur.close()
         conn.close()
+
 
 def save_allowed_users(allowed_users: List[int]) -> None:
     conn = get_db_connection()
@@ -187,6 +194,7 @@ def save_allowed_users(allowed_users: List[int]) -> None:
         cur.close()
         conn.close()
 
+
 # Для user_profiles
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
     conn = get_db_connection()
@@ -201,6 +209,7 @@ def load_user_profiles() -> Dict[int, Dict[str, str]]:
     finally:
         cur.close()
         conn.close()
+
 
 def save_user_profiles(user_profiles: Dict[int, Dict[str, str]]) -> None:
     conn = get_db_connection()
@@ -217,6 +226,7 @@ def save_user_profiles(user_profiles: Dict[int, Dict[str, str]]) -> None:
         cur.close()
         conn.close()
 
+
 # Для knowledge_base
 def load_knowledge_base() -> List[str]:
     conn = get_db_connection()
@@ -230,6 +240,7 @@ def load_knowledge_base() -> List[str]:
     finally:
         cur.close()
         conn.close()
+
 
 def save_knowledge_base(knowledge_base: List[str]) -> None:
     conn = get_db_connection()
@@ -245,6 +256,7 @@ def save_knowledge_base(knowledge_base: List[str]) -> None:
     finally:
         cur.close()
         conn.close()
+
 
 # Функция для логирования запросов
 def log_request(user_id: int, request_text: str, response_text: str) -> None:
@@ -263,6 +275,7 @@ def log_request(user_id: int, request_text: str, response_text: str) -> None:
         cur.close()
         conn.close()
 
+
 # Загрузка глобальных переменных (теперь из БД)
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
@@ -280,20 +293,20 @@ default_reply_markup = ReplyKeyboardMarkup(default_keyboard, resize_keyboard=Tru
 # Системный промпт для AI (без изменений)
 system_prompt = "Ты - полезный и дружелюбный ассистент, созданный xAI. Отвечай кратко и по делу, используя предоставленные факты и результаты поиска, если они есть. Если информации недостаточно, предложи поискать или уточнить запрос."
 
+
 # Функции для Yandex Disk (вставьте реализацию, как в оригинале)
 def create_yandex_folder(path: str) -> bool:
+    pass
     # ... (ваша реализация)
 
-# ... (остальные функции для Yandex, web_search без изменений)
 
-# Обработчики (с минимальными изменениями: теперь save/load используют БД)
-# Например, в handle_learn:
 async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # ... (основной код)
     global KNOWLEDGE_BASE
     KNOWLEDGE_BASE.append(fact)
     save_knowledge_base(KNOWLEDGE_BASE)  # Теперь сохраняет в БД
     # ...
+
 
 # Аналогично для других: handle_forget, adduser, deluser и т.д. - замените save/load на новые функции
 
@@ -304,9 +317,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     log_request(user_id, user_input, response_text)  # Логируем запрос и ответ
     # ...
 
+
 # Главная функция (без изменений, кроме init_db выше)
 def main() -> None:
-    # ... (ваш код)
+
+
+# ... (ваш код)
 
 if __name__ == "__main__":
     main()
