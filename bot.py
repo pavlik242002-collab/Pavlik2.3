@@ -148,10 +148,10 @@ def init_db():
             );
         """)
         # Исправление типов (если таблицы созданы ранее с INTEGER)
-        cur.execute("ALTER TABLE allowed_admins ALTER COLUMN id TYPE BIGINT;")
-        cur.execute("ALTER TABLE allowed_users ALTER COLUMN id TYPE BIGINT;")
-        cur.execute("ALTER TABLE user_profiles ALTER COLUMN user_id TYPE BIGINT;")
-        cur.execute("ALTER TABLE request_logs ALTER COLUMN user_id TYPE BIGINT;")
+        cur.execute("ALTER TABLE allowed_admins ALTER COLUMN id TYPE BIGINT USING id::BIGINT;")
+        cur.execute("ALTER TABLE allowed_users ALTER COLUMN id TYPE BIGINT USING id::BIGINT;")
+        cur.execute("ALTER TABLE user_profiles ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;")
+        cur.execute("ALTER TABLE request_logs ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;")
         # Добавление вашего ID как админа
         cur.execute("INSERT INTO allowed_admins (id) VALUES (%s) ON CONFLICT DO NOTHING;", (6909708460,))
         conn.commit()
@@ -323,21 +323,66 @@ default_reply_markup = ReplyKeyboardMarkup(default_keyboard, resize_keyboard=Tru
 # Системный промпт для AI
 system_prompt = "Ты - полезный и дружелюбный ассистент, созданный xAI. Отвечай кратко и по делу, используя предоставленные факты и результаты поиска, если они есть. Если информации недостаточно, предложи поискать или уточнить запрос."
 
-# Функции для Yandex Disk (заглушки с правильными отступами)
+# Функции для Yandex Disk
 def create_yandex_folder(path: str) -> bool:
-    pass
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    response = requests.put(f"https://cloud-api.yandex.net/v1/disk/resources?path={quote(path)}", headers=headers)
+    return response.status_code in (201, 409)  # 409 if already exists
 
 def upload_to_yandex(file_path: str, yandex_path: str) -> bool:
-    pass
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    # Получить ссылку для загрузки
+    response = requests.get(f"https://cloud-api.yandex.net/v1/disk/resources/upload?path={quote(yandex_path)}&overwrite=true", headers=headers)
+    if response.status_code != 200:
+        logger.error(f"Ошибка получения ссылки для загрузки: {response.text}")
+        return False
+    upload_url = response.json().get('href')
+    with open(file_path, 'rb') as f:
+        upload_response = requests.put(upload_url, files={'file': f})
+    if upload_response.status_code != 201:
+        logger.error(f"Ошибка загрузки файла: {upload_response.text}")
+        return False
+    return True
 
 def list_yandex_files(path: str) -> List[Dict[str, Any]]:
-    pass
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    response = requests.get(f"https://cloud-api.yandex.net/v1/disk/resources?path={quote(path)}&fields=_embedded.items.name,_embedded.items.type", headers=headers)
+    if response.status_code != 200:
+        logger.error(f"Ошибка списка файлов: {response.text}")
+        return []
+    items = response.json().get('_embedded', {}).get('items', [])
+    return [item for item in items if item.get('type') == 'file']
 
 def get_yandex_download_link(path: str) -> str:
-    pass
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    response = requests.get(f"https://cloud-api.yandex.net/v1/disk/resources/download?path={quote(path)}", headers=headers)
+    if response.status_code != 200:
+        logger.error(f"Ошибка получения ссылки для скачивания: {response.text}")
+        return ""
+    return response.json().get('href', "")
 
+# Функция веб-поиска
 def web_search(query: str) -> str:
-    pass
+    with DDGS() as ddgs:
+        results = [r for r in ddgs.text(query, max_results=5)]
+        return json.dumps(results, ensure_ascii=False, indent=2)
+
+# Инициализация папок Yandex Disk
+def initialize_yandex_folders() -> None:
+    base_path = '/regions'
+    if not create_yandex_folder(base_path):
+        logger.error(f"Не удалось создать папку {base_path}")
+    for district in FEDERAL_DISTRICTS:
+        district_path = f"{base_path}/{district}"
+        if not create_yandex_folder(district_path):
+            logger.error(f"Не удалось создать папку {district_path}")
+        for region in FEDERAL_DISTRICTS[district]:
+            region_path = f"{district_path}/{region}"
+            if not create_yandex_folder(region_path):
+                logger.error(f"Не удалось создать папку {region_path}")
+    docs_path = '/documents'
+    if not create_yandex_folder(docs_path):
+        logger.error(f"Не удалось создать папку {docs_path}")
 
 # Обработчик /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -396,6 +441,76 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     reply_markup = InlineKeyboardMarkup(buttons)
     await update.message.reply_text("Выберите факт для удаления:", reply_markup=reply_markup)
     logger.info(f"Администратор {user_id} запросил удаление факта.")
+
+# Обработчик /adduser
+async def handle_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Только администраторы могут добавлять пользователей.", reply_markup=default_reply_markup)
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Укажите ID пользователя: /adduser <ID>", reply_markup=default_reply_markup)
+        return
+    try:
+        new_user_id = int(args[0])
+        if new_user_id not in ALLOWED_USERS:
+            ALLOWED_USERS.append(new_user_id)
+            save_allowed_users(ALLOWED_USERS)
+            await update.message.reply_text(f"Пользователь {new_user_id} добавлен.", reply_markup=default_reply_markup)
+            logger.info(f"Администратор {user_id} добавил пользователя {new_user_id}")
+        else:
+            await update.message.reply_text(f"Пользователь {new_user_id} уже в списке.", reply_markup=default_reply_markup)
+    except ValueError:
+        await update.message.reply_text("Неверный ID пользователя.", reply_markup=default_reply_markup)
+
+# Обработчик /deluser
+async def handle_deluser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Только администраторы могут удалять пользователей.", reply_markup=default_reply_markup)
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Укажите ID пользователя: /deluser <ID>", reply_markup=default_reply_markup)
+        return
+    try:
+        del_user_id = int(args[0])
+        if del_user_id in ALLOWED_USERS:
+            ALLOWED_USERS.remove(del_user_id)
+            save_allowed_users(ALLOWED_USERS)
+            await update.message.reply_text(f"Пользователь {del_user_id} удалён.", reply_markup=default_reply_markup)
+            logger.info(f"Администратор {user_id} удалил пользователя {del_user_id}")
+        else:
+            await update.message.reply_text(f"Пользователь {del_user_id} не найден.", reply_markup=default_reply_markup)
+    except ValueError:
+        await update.message.reply_text("Неверный ID пользователя.", reply_markup=default_reply_markup)
+
+# Обработчик /listusers
+async def handle_listusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Только администраторы могут просматривать список пользователей.", reply_markup=default_reply_markup)
+        return
+    if not ALLOWED_USERS:
+        await update.message.reply_text("Список пользователей пуст.", reply_markup=default_reply_markup)
+        return
+    users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS])
+    await update.message.reply_text(f"Пользователи:\n{users_list}", reply_markup=default_reply_markup)
+    logger.info(f"Администратор {user_id} запросил список пользователей.")
+
+# Обработчик /listadmins
+async def handle_listadmins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Только администраторы могут просматривать список администраторов.", reply_markup=default_reply_markup)
+        return
+    if not ALLOWED_ADMINS:
+        await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
+        return
+    admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
+    await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
+    logger.info(f"Администратор {user_id} запросил список администраторов.")
 
 # Обработчик документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -459,7 +574,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         download_link = get_yandex_download_link(file_path)
         if download_link:
             await query.message.reply_document(document=download_link, filename=file_name)
-            await update.message.reply_text("Файл отправлен. Теперь вы можете общаться с AI.", reply_markup=default_reply_markup)
+            await query.message.reply_text("Файл отправлен. Теперь вы можете общаться с AI.", reply_markup=default_reply_markup)
         else:
             await query.message.reply_text("Ошибка при получении файла.", reply_markup=default_reply_markup)
         await query.answer()
@@ -518,50 +633,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
         await update.message.reply_text("Доступ запрещён.", reply_markup=default_reply_markup)
-        return
-
-    # Обработка админ-команд
-    if user_id in ALLOWED_ADMINS and user_input.lower().startswith("adduser"):
-        try:
-            new_user_id = int(user_input.split()[1])
-            if new_user_id not in ALLOWED_USERS:
-                ALLOWED_USERS.append(new_user_id)
-                save_allowed_users(ALLOWED_USERS)
-                await update.message.reply_text(f"Пользователь {new_user_id} добавлен.", reply_markup=default_reply_markup)
-                logger.info(f"Администратор {user_id} добавил пользователя {new_user_id}")
-            else:
-                await update.message.reply_text(f"Пользователь {new_user_id} уже в списке.", reply_markup=default_reply_markup)
-        except (IndexError, ValueError):
-            await update.message.reply_text("Укажите ID пользователя: adduser <ID>", reply_markup=default_reply_markup)
-        return
-    if user_id in ALLOWED_ADMINS and user_input.lower().startswith("deluser"):
-        try:
-            del_user_id = int(user_input.split()[1])
-            if del_user_id in ALLOWED_USERS:
-                ALLOWED_USERS.remove(del_user_id)
-                save_allowed_users(ALLOWED_USERS)
-                await update.message.reply_text(f"Пользователь {del_user_id} удалён.", reply_markup=default_reply_markup)
-                logger.info(f"Администратор {user_id} удалил пользователя {del_user_id}")
-            else:
-                await update.message.reply_text(f"Пользователь {del_user_id} не найден.", reply_markup=default_reply_markup)
-        except (IndexError, ValueError):
-            await update.message.reply_text("Укажите ID пользователя: deluser <ID>", reply_markup=default_reply_markup)
-        return
-    if user_id in ALLOWED_ADMINS and user_input.lower() == "listusers":
-        if not ALLOWED_USERS:
-            await update.message.reply_text("Список пользователей пуст.", reply_markup=default_reply_markup)
-            return
-        users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS])
-        await update.message.reply_text(f"Пользователи:\n{users_list}", reply_markup=default_reply_markup)
-        logger.info(f"Администратор {user_id} запросил список пользователей.")
-        return
-    if user_id in ALLOWED_ADMINS and user_input.lower() == "listadmins":
-        if not ALLOWED_ADMINS:
-            await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
-            return
-        admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
-        await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
-        logger.info(f"Администратор {user_id} запросил список администраторов.")
         return
 
     # Обработка текстового сообщения через API
@@ -655,12 +726,17 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # Главная функция
 def main() -> None:
     logger.info("Запуск Telegram бота...")
+    initialize_yandex_folders()
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(CommandHandler("learn", handle_learn))
         app.add_handler(CommandHandler("forget", handle_forget))
+        app.add_handler(CommandHandler("adduser", handle_adduser))
+        app.add_handler(CommandHandler("deluser", handle_deluser))
+        app.add_handler(CommandHandler("listusers", handle_listusers))
+        app.add_handler(CommandHandler("listadmins", handle_listadmins))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
