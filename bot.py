@@ -1422,14 +1422,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response = f"Администраторы:\n{admins_list}"
         await update.message.reply_text(response, reply_markup=default_reply_markup)
         log_request(user_id, user_input, response)
-        logger.info(f"Администратор {user_id} запросил список администраторов.")
-        handled = True
-
-    if not handled:
-        if chat_id not in histories:
-            histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
-
-        if KNOWLEDGE_BASE:
-            knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
-            histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
-            logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
+        logger.info(f"Администратор {user_id} запросил список
