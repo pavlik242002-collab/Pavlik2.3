@@ -1118,7 +1118,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 context.user_data["awaiting_fio"] = False
                 context.user_data["awaiting_federal_district"] = True
                 keyboard = [[district] for district in FEDERAL_DISTRICTS.keys()]
-                reply_markup = ReplyKeyboardervalMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
                 await update.message.reply_text(response, reply_markup=reply_markup)
                 log_request(user_id, f"register_fio {user_input}", response)
                 logger.info(f"Сохранение ФИО для user_id {user_id}: {user_input}")
@@ -1433,19 +1433,3 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
             histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
             logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
-
-        need_search = any(word in user_input.lower() for word in [
-            "актуальная информация", "последние новости", "найди в интернете", "поиск",
-            "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о",
-            "вскс", "спасатели", "корпус спасателей"
-        ])
-
-        if need_search:
-            logger.info(f"Выполняется поиск для запроса: {user_input}")
-            search_results_json = web_search(user_input)
-            response = "Поиск выполнен, но обработка результатов не реализована."
-            await update.message.reply_text(response)
-            log_request(user_id, user_input, response)
-
-def main() -> None:
-    application = Application.builder
