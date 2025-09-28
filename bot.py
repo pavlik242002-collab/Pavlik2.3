@@ -143,7 +143,6 @@ def init_db():
     conn.close()
     logger.info("База данных инициализирована.")
 
-# Функция логирования запросов
 def log_request(user_id: int, request_text: str, response_text: str) -> None:
     """Сохраняет запрос и ответ в таблицу user_requests."""
     conn = get_db_connection()
@@ -157,7 +156,6 @@ def log_request(user_id: int, request_text: str, response_text: str) -> None:
     conn.close()
     logger.info(f"Логирован запрос user_id {user_id}: {request_text} -> {response_text[:50]}...")
 
-# Функции для администраторов
 def load_allowed_admins() -> List[int]:
     """Загружает список ID администраторов из БД."""
     conn = get_db_connection()
@@ -180,7 +178,6 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
     conn.close()
     logger.info("Список администраторов сохранён в БД.")
 
-# Функции для пользователей
 def load_allowed_users() -> List[int]:
     """Загружает список ID разрешённых пользователей из БД."""
     conn = get_db_connection()
@@ -203,7 +200,6 @@ def save_allowed_users(allowed_users: List[int]) -> None:
     conn.close()
     logger.info("Список пользователей сохранён в БД.")
 
-# Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
     """Загружает профили пользователей из БД."""
     conn = get_db_connection()
@@ -230,7 +226,6 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     conn.close()
     logger.info("Профили сохранены в БД.")
 
-# Функции для базы знаний
 def load_knowledge_base() -> List[str]:
     """Загружает базу знаний из файла."""
     try:
@@ -267,7 +262,7 @@ def save_knowledge_base(facts: List[str]) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении knowledge_base.json: {str(e)}")
 
-# Инициализация глобальных переменных
+# Инициализация глобальных переменных (после функций БД)
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
@@ -420,8 +415,9 @@ def web_search(query: str) -> str:
         logger.error(f"Ошибка при поиске: {str(e)}")
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
 
-# Обработчик команды /learn
+# Обработчики команд
 async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global KNOWLEDGE_BASE
     user_id: int = update.effective_user.id
     if user_id not in ALLOWED_ADMINS:
         response = "Только администраторы могут обучать бота."
@@ -434,7 +430,6 @@ async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         log_request(user_id, "/learn", response)
         return
     fact = ' '.join(context.args)
-    global KNOWLEDGE_BASE
     KNOWLEDGE_BASE = add_knowledge(fact, KNOWLEDGE_BASE)
     save_knowledge_base(KNOWLEDGE_BASE)
     response = f"Факт добавлен: '{fact}'."
@@ -442,8 +437,8 @@ async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     log_request(user_id, f"/learn {fact}", response)
     logger.info(f"Администратор {user_id} добавил факт: {fact}")
 
-# Обработчик команды /forget
 async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global KNOWLEDGE_BASE
     user_id: int = update.effective_user.id
     if user_id not in ALLOWED_ADMINS:
         response = "Только администраторы могут удалять факты."
@@ -456,16 +451,15 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         log_request(user_id, "/forget", response)
         return
     fact = ' '.join(context.args)
-    global KNOWLEDGE_BASE
     KNOWLEDGE_BASE = remove_knowledge(fact, KNOWLEDGE_BASE)
     save_knowledge_base(KNOWLEDGE_BASE)
-    response = f"Факт удалён: '{fact}'." if fact in KNOWLEDGE_BASE else f"Факт '{fact}' не найден."
+    response = f"Факт удалён: '{fact}'." if fact not in KNOWLEDGE_BASE else f"Факт '{fact}' не найден."
     await update.message.reply_text(response)
     log_request(user_id, f"/forget {fact}", response)
     logger.info(f"Администратор {user_id} удалил факт: {fact}")
 
-# Обработчик команды /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global ALLOWED_USERS, ALLOWED_ADMINS, USER_PROFILES
     if update.effective_user is None or update.effective_chat is None:
         response = "Ошибка: не удалось определить пользователя или чат."
         await update.message.reply_text(response)
@@ -503,7 +497,6 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         response = "Выберите действие:"
         log_request(user_id, "/start", response)
 
-# Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = update.effective_user.id
     admin_keyboard = [
@@ -523,8 +516,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(response, reply_markup=reply_markup)
     log_request(user_id, "show_main_menu", response)
 
-# Обработчик команды /getfile
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global ALLOWED_USERS, ALLOWED_ADMINS
     user_id: int = update.effective_user.id
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
         response = "Извините, у вас нет доступа."
@@ -547,9 +540,7 @@ async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
-    # Логирование происходит в search_and_send_file
 
-# Поиск и отправка файла
 async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
     user_id: int = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
@@ -621,7 +612,6 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         log_request(user_id, f"getfile {file_name}", response)
         logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
-# Обработка загруженных документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = update.effective_user.id
     if not context.user_data.get('awaiting_upload', False):
@@ -679,7 +669,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data.pop('awaiting_upload', None)
     logger.info(f"Пользователь {user_id} загрузил файл {file_name} в {region_folder}.")
 
-# Отображение списка файлов
 async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
     user_id: int = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
@@ -718,7 +707,6 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     log_request(user_id, "show_file_list", action_text)
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
 
-# Отображение содержимого /documents/
 async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, is_return: bool = False) -> None:
     user_id: int = update.effective_user.id
     context.user_data.pop('file_list', None)
@@ -765,7 +753,6 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         log_request(user_id, "show_current_docs", response)
         logger.info(f"Папка {current_path} пуста.")
 
-# Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -952,7 +939,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data.pop('file_list', None)
             await show_file_list(update, context, for_deletion=True)
 
-# Вспомогательная функция для главного меню через callback
 async def show_main_menu_with_query(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = query.from_user.id
     admin_keyboard = [
@@ -972,8 +958,8 @@ async def show_main_menu_with_query(query: Update.callback_query, context: Conte
     await query.message.reply_text(response, reply_markup=reply_markup)
     log_request(user_id, "show_main_menu_with_query", response)
 
-# Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global ALLOWED_USERS, ALLOWED_ADMINS, USER_PROFILES, KNOWLEDGE_BASE
     if update.effective_user is None or update.effective_chat is None:
         response = "Ошибка: не удалось определить пользователя или чат."
         await update.message.reply_text(response)
@@ -1210,7 +1196,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if context.user_data.get('awaiting_user_id'):
         try:
             new_id = int(user_input)
-            global ALLOWED_USERS, ALLOWED_ADMINS
             if context.user_data['awaiting_user_id'] == 'add_user':
                 if new_id in ALLOWED_USERS:
                     response = f"Пользователь с ID {new_id} уже имеет доступ."
@@ -1314,7 +1299,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if chat_id not in histories:
             histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-        global KNOWLEDGE_BASE
         if KNOWLEDGE_BASE:
             knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
             histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
@@ -1391,7 +1375,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(final_response, reply_markup=default_reply_markup)
         log_request(user_id, user_input, final_response)
 
-# Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
@@ -1399,17 +1382,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(response)
         log_request(update.effective_user.id if update.effective_user else 0, "error", response)
 
-# Webhook endpoint
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
     update = Update.de_json(request.get_json(), application.bot)
     application.process_update(update)
     return 'OK'
 
-# Глобальное приложение Telegram
 application: Optional[Application] = None
 
-# Главная функция
 def main() -> None:
     global application
     logger.info("Запуск Telegram бота на Railway...")
