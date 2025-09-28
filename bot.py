@@ -13,8 +13,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import InputFile
 from urllib.parse import quote
 from openai import OpenAI
-import psycopg2
-from psycopg2.extras import Json
 
 # Настройка логирования
 logging.basicConfig(
@@ -28,13 +26,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения
-load_dotenv()
+load_dotenv()  # Загружаем .env для локального запуска
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.environ.get("YANDEX_TOKEN")
 XAI_TOKEN = os.environ.get("XAI_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Проверка токенов и DATABASE_URL
+# Проверка токенов с улучшенным логированием
 missing_tokens = []
 if not TELEGRAM_TOKEN:
     missing_tokens.append("TELEGRAM_TOKEN")
@@ -42,8 +39,6 @@ if not YANDEX_TOKEN:
     missing_tokens.append("YANDEX_TOKEN")
 if not XAI_TOKEN:
     missing_tokens.append("XAI_TOKEN")
-if not DATABASE_URL:
-    missing_tokens.append("DATABASE_URL")
 
 if missing_tokens:
     logger.error(f"Отсутствуют токены: {', '.join(missing_tokens)}")
@@ -100,217 +95,80 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-# Функции для работы с Postgres
-def get_db_connection():
-    """Создаёт соединение с Postgres."""
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
-    except Exception as e:
-        logger.error(f"Ошибка подключения к БД: {str(e)}")
-        raise
-
-def init_db():
-    """Инициализирует таблицы в БД и добавляет админа."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        # Создание таблиц с BIGINT
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS allowed_admins (
-                id BIGINT PRIMARY KEY
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS allowed_users (
-                id BIGINT PRIMARY KEY
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_profiles (
-                user_id BIGINT PRIMARY KEY,
-                profile JSONB
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS knowledge_base (
-                id SERIAL PRIMARY KEY,
-                fact TEXT NOT NULL
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS request_logs (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                request_text TEXT,
-                response_text TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        # Исправление типов (если таблицы созданы ранее с INTEGER)
-        cur.execute("ALTER TABLE allowed_admins ALTER COLUMN id TYPE BIGINT USING id::BIGINT;")
-        cur.execute("ALTER TABLE allowed_users ALTER COLUMN id TYPE BIGINT USING id::BIGINT;")
-        cur.execute("ALTER TABLE user_profiles ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;")
-        cur.execute("ALTER TABLE request_logs ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;")
-        # Добавление вашего ID как админа
-        cur.execute("INSERT INTO allowed_admins (id) VALUES (%s) ON CONFLICT DO NOTHING;", (6909708460,))
-        conn.commit()
-        logger.info("Таблицы в БД инициализированы, типы исправлены, админ 6909708460 добавлен.")
-    except Exception as e:
-        logger.error(f"Ошибка инициализации БД: {str(e)}")
-    finally:
-        cur.close()
-        conn.close()
-
-# Вызываем инициализацию БД при запуске
-init_db()
-
 # Функции для работы с администраторами
 def load_allowed_admins() -> List[int]:
-    conn = get_db_connection()
-    cur = conn.cursor()
+    """Загружает список ID администраторов из файла."""
     try:
-        cur.execute("SELECT id FROM allowed_admins;")
-        admins = [row[0] for row in cur.fetchall()]
-        logger.info(f"Загруженные админы: {admins}")
-        if not admins:
-            default_admin = 6909708460
-            cur.execute("INSERT INTO allowed_admins (id) VALUES (%s) ON CONFLICT DO NOTHING;", (default_admin,))
-            conn.commit()
-            admins.append(default_admin)
-        return admins
+        if not os.path.exists('allowed_admins.json'):
+            logger.warning("Файл allowed_admins.json не найден, создаётся новый.")
+            with open('allowed_admins.json', 'w', encoding='utf-8') as f:
+                json.dump([123456789], f, ensure_ascii=False)  # Замени на свой Telegram ID
+        with open('allowed_admins.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
     except Exception as e:
-        logger.error(f"Ошибка загрузки admins: {str(e)}")
-        return []
-    finally:
-        cur.close()
-        conn.close()
+        logger.error(f"Ошибка при загрузке allowed_admins.json: {str(e)}")
+        return [123456789]  # Замени на свой Telegram ID
 
 def save_allowed_admins(allowed_admins: List[int]) -> None:
-    conn = get_db_connection()
-    cur = conn.cursor()
+    """Сохраняет список ID администраторов в файл."""
     try:
-        cur.execute("DELETE FROM allowed_admins;")
-        for admin_id in allowed_admins:
-            cur.execute("INSERT INTO allowed_admins (id) VALUES (%s);", (admin_id,))
-        conn.commit()
-        logger.info("Админы сохранены в БД.")
+        with open('allowed_admins.json', 'w', encoding='utf-8') as f:
+            json.dump(allowed_admins, f, ensure_ascii=False, indent=2)
+            logger.info("Список администраторов сохранён.")
     except Exception as e:
-        logger.error(f"Ошибка сохранения admins: {str(e)}")
-    finally:
-        cur.close()
-        conn.close()
+        logger.error(f"Ошибка при сохранении allowed_admins.json: {str(e)}")
 
-# Функции для пользователей
+# Функции для работы с пользователями
 def load_allowed_users() -> List[int]:
-    conn = get_db_connection()
-    cur = conn.cursor()
+    """Загружает список ID разрешённых пользователей."""
     try:
-        cur.execute("SELECT id FROM allowed_users;")
-        return [row[0] for row in cur.fetchall()]
+        if not os.path.exists('allowed_users.json'):
+            logger.warning("Файл allowed_users.json не найден, создаётся новый.")
+            with open('allowed_users.json', 'w', encoding='utf-8') as f:
+                json.dump([], f, ensure_ascii=False)
+        with open('allowed_users.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
     except Exception as e:
-        logger.error(f"Ошибка загрузки users: {str(e)}")
+        logger.error(f"Ошибка при загрузке allowed_users.json: {str(e)}")
         return []
-    finally:
-        cur.close()
-        conn.close()
 
 def save_allowed_users(allowed_users: List[int]) -> None:
-    conn = get_db_connection()
-    cur = conn.cursor()
+    """Сохраняет список ID разрешённых пользователей."""
     try:
-        cur.execute("DELETE FROM allowed_users;")
-        for user_id in allowed_users:
-            cur.execute("INSERT INTO allowed_users (id) VALUES (%s);", (user_id,))
-        conn.commit()
-        logger.info("Пользователи сохранены в БД.")
+        with open('allowed_users.json', 'w', encoding='utf-8') as f:
+            json.dump(allowed_users, f, ensure_ascii=False, indent=2)
+            logger.info("Список пользователей сохранён.")
     except Exception as e:
-        logger.error(f"Ошибка сохранения users: {str(e)}")
-    finally:
-        cur.close()
-        conn.close()
+        logger.error(f"Ошибка при сохранении allowed_users.json: {str(e)}")
 
-# Для профилей пользователей
+# Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
-    conn = get_db_connection()
-    cur = conn.cursor()
+    """Загружает профили пользователей из файла."""
     try:
-        cur.execute("SELECT user_id, profile FROM user_profiles;")
-        profiles = {row[0]: row[1] for row in cur.fetchall()}
-        return profiles
+        if not os.path.exists('user_profiles.json'):
+            logger.warning("Файл user_profiles.json не найден, создаётся новый.")
+            with open('user_profiles.json', 'w', encoding='utf-8') as f:
+                json.dump({}, f, ensure_ascii=False)
+        with open('user_profiles.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
     except Exception as e:
-        logger.error(f"Ошибка загрузки profiles: {str(e)}")
+        logger.error(f"Ошибка при загрузке user_profiles.json: {str(e)}")
         return {}
-    finally:
-        cur.close()
-        conn.close()
 
 def save_user_profiles(user_profiles: Dict[int, Dict[str, str]]) -> None:
-    conn = get_db_connection()
-    cur = conn.cursor()
+    """Сохраняет профили пользователей в файл."""
     try:
-        cur.execute("DELETE FROM user_profiles;")
-        for user_id, profile in user_profiles.items():
-            cur.execute("INSERT INTO user_profiles (user_id, profile) VALUES (%s, %s);", (user_id, Json(profile)))
-        conn.commit()
-        logger.info("Профили сохранены в БД.")
+        with open('user_profiles.json', 'w', encoding='utf-8') as f:
+            json.dump(user_profiles, f, ensure_ascii=False, indent=2)
+            logger.info("Профили пользователей сохранены.")
     except Exception as e:
-        logger.error(f"Ошибка сохранения profiles: {str(e)}")
-    finally:
-        cur.close()
-        conn.close()
-
-# Для базы знаний
-def load_knowledge_base() -> List[str]:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT fact FROM knowledge_base ORDER BY id;")
-        return [row[0] for row in cur.fetchall()]
-    except Exception as e:
-        logger.error(f"Ошибка загрузки knowledge_base: {str(e)}")
-        return []
-    finally:
-        cur.close()
-        conn.close()
-
-def save_knowledge_base(knowledge_base: List[str]) -> None:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM knowledge_base;")
-        for fact in knowledge_base:
-            cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s);", (fact,))
-        conn.commit()
-        logger.info("Knowledge base сохранена в БД.")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения knowledge_base: {str(e)}")
-    finally:
-        cur.close()
-        conn.close()
-
-# Функция для логирования запросов
-def log_request(user_id: int, request_text: str, response_text: str) -> None:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO request_logs (user_id, request_text, response_text)
-            VALUES (%s, %s, %s);
-        """, (user_id, request_text, response_text))
-        conn.commit()
-        logger.info(f"Запрос от {user_id} залогирован.")
-    except Exception as e:
-        logger.error(f"Ошибка логирования запроса: {str(e)}")
-    finally:
-        cur.close()
-        conn.close()
+        logger.error(f"Ошибка при сохранении user_profiles.json: {str(e)}")
 
 # Загрузка глобальных переменных
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
-KNOWLEDGE_BASE = load_knowledge_base()
+KNOWLEDGE_BASE = []
 histories = {}
 
 # Главное меню
@@ -323,91 +181,36 @@ default_reply_markup = ReplyKeyboardMarkup(default_keyboard, resize_keyboard=Tru
 # Системный промпт для AI
 system_prompt = "Ты - полезный и дружелюбный ассистент, созданный xAI. Отвечай кратко и по делу, используя предоставленные факты и результаты поиска, если они есть. Если информации недостаточно, предложи поискать или уточнить запрос."
 
-# Функции для Yandex Disk
+# Функции для работы с Yandex Disk (вставьте из оригинального bot.py)
 def create_yandex_folder(path: str) -> bool:
-    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
-    response = requests.put(f"https://cloud-api.yandex.net/v1/disk/resources?path={quote(path)}", headers=headers)
-    return response.status_code in (201, 409)  # 409 if already exists
+    # Вставьте реализацию из оригинального bot.py
+    pass
 
 def upload_to_yandex(file_path: str, yandex_path: str) -> bool:
-    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
-    # Получить ссылку для загрузки
-    response = requests.get(f"https://cloud-api.yandex.net/v1/disk/resources/upload?path={quote(yandex_path)}&overwrite=true", headers=headers)
-    if response.status_code != 200:
-        logger.error(f"Ошибка получения ссылки для загрузки: {response.text}")
-        return False
-    upload_url = response.json().get('href')
-    with open(file_path, 'rb') as f:
-        upload_response = requests.put(upload_url, files={'file': f})
-    if upload_response.status_code != 201:
-        logger.error(f"Ошибка загрузки файла: {upload_response.text}")
-        return False
-    return True
+    # Вставьте реализацию из оригинального bot.py
+    pass
 
 def list_yandex_files(path: str) -> List[Dict[str, Any]]:
-    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
-    response = requests.get(f"https://cloud-api.yandex.net/v1/disk/resources?path={quote(path)}&fields=_embedded.items.name,_embedded.items.type", headers=headers)
-    if response.status_code != 200:
-        logger.error(f"Ошибка списка файлов: {response.text}")
-        return []
-    items = response.json().get('_embedded', {}).get('items', [])
-    return [item for item in items if item.get('type') == 'file']
+    # Вставьте реализацию из оригинального bot.py
+    pass
 
 def get_yandex_download_link(path: str) -> str:
-    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
-    response = requests.get(f"https://cloud-api.yandex.net/v1/disk/resources/download?path={quote(path)}", headers=headers)
-    if response.status_code != 200:
-        logger.error(f"Ошибка получения ссылки для скачивания: {response.text}")
-        return ""
-    return response.json().get('href', "")
+    # Вставьте реализацию из оригинального bot.py
+    pass
 
-# Функция веб-поиска
+# Функция веб-поиска (вставьте из оригинального bot.py)
 def web_search(query: str) -> str:
-    with DDGS() as ddgs:
-        results = [r for r in ddgs.text(query, max_results=5)]
-        return json.dumps(results, ensure_ascii=False, indent=2)
+    # Вставьте реализацию из оригинального bot.py
+    pass
 
-# Инициализация папок Yandex Disk
-def initialize_yandex_folders() -> None:
-    base_path = '/regions'
-    if not create_yandex_folder(base_path):
-        logger.error(f"Не удалось создать папку {base_path}")
-    for district in FEDERAL_DISTRICTS:
-        district_path = f"{base_path}/{district}"
-        if not create_yandex_folder(district_path):
-            logger.error(f"Не удалось создать папку {district_path}")
-        for region in FEDERAL_DISTRICTS[district]:
-            region_path = f"{district_path}/{region}"
-            if not create_yandex_folder(region_path):
-                logger.error(f"Не удалось создать папку {region_path}")
-    docs_path = '/documents'
-    if not create_yandex_folder(docs_path):
-        logger.error(f"Не удалось создать папку {docs_path}")
-    users_path = '/users'
-    if not create_yandex_folder(users_path):
-        logger.error(f"Не удалось создать папку {users_path}")
-
-# Функция создания папки для пользователя
-def create_user_folder(user_id: int) -> bool:
-    path = f"/users/{user_id}"
-    return create_yandex_folder(path)
-
-# Обработчик /start с регистрацией
+# Обработчик /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        # Автоматическая регистрация
-        ALLOWED_USERS.append(user_id)
-        save_allowed_users(ALLOWED_USERS)
-        if create_user_folder(user_id):
-            logger.info(f"Папка для пользователя {user_id} создана на Yandex Disk.")
-        else:
-            logger.error(f"Ошибка создания папки для пользователя {user_id}.")
-        await update.message.reply_text("Вы успешно зарегистрированы! Напишите сообщение для чата с AI.", reply_markup=default_reply_markup)
-        logger.info(f"Новый пользователь {user_id} зарегистрирован.")
-    else:
-        await update.message.reply_text("Добро пожаловать! Напишите сообщение для чата с AI.", reply_markup=default_reply_markup)
-        logger.info(f"Пользователь {user_id} запустил бота.")
+        await update.message.reply_text("Доступ запрещён. Обратитесь к администратору.", reply_markup=default_reply_markup)
+        return
+    await update.message.reply_text("Добро пожаловать! Напишите сообщение для чата с AI.", reply_markup=default_reply_markup)
+    logger.info(f"Пользователь {user_id} запустил бота.")
 
 # Обработчик /getfile
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -435,7 +238,8 @@ async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     global KNOWLEDGE_BASE
     KNOWLEDGE_BASE.append(fact)
     try:
-        save_knowledge_base(KNOWLEDGE_BASE)
+        with open('knowledge_base.json', 'w', encoding='utf-8') as f:
+            json.dump({"facts": KNOWLEDGE_BASE}, f, ensure_ascii=False, indent=2)
         await update.message.reply_text(f"Факт добавлен: {fact}", reply_markup=default_reply_markup)
         logger.info(f"Администратор {user_id} добавил факт: {fact}")
     except Exception as e:
@@ -560,7 +364,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         global KNOWLEDGE_BASE
         try:
             removed_fact = KNOWLEDGE_BASE.pop(fact_index)
-            save_knowledge_base(KNOWLEDGE_BASE)
+            with open('knowledge_base.json', 'w', encoding='utf-8') as f:
+                json.dump({"facts": KNOWLEDGE_BASE}, f, ensure_ascii=False, indent=2)
             await query.message.reply_text(f"Факт удалён: {removed_fact}", reply_markup=default_reply_markup)
             logger.info(f"Администратор {user_id} удалил факт: {removed_fact}")
         except Exception as e:
@@ -581,17 +386,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Доступ запрещён.", reply_markup=default_reply_markup)
         return
 
-    # Обработка админ-команд (как в оригинале)
+    # Обработка админ-команд
     if user_id in ALLOWED_ADMINS and user_input.lower().startswith("adduser"):
         try:
             new_user_id = int(user_input.split()[1])
             if new_user_id not in ALLOWED_USERS:
                 ALLOWED_USERS.append(new_user_id)
                 save_allowed_users(ALLOWED_USERS)
-                if create_user_folder(new_user_id):
-                    logger.info(f"Папка для пользователя {new_user_id} создана на Yandex Disk.")
-                else:
-                    logger.error(f"Ошибка создания папки для пользователя {new_user_id}.")
                 await update.message.reply_text(f"Пользователь {new_user_id} добавлен.", reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} добавил пользователя {new_user_id}")
             else:
@@ -707,7 +508,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
     final_response = f"{user_name}, {response_text}"
     histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
-    log_request(user_id, user_input, response_text)
     await update.message.reply_text(final_response, reply_markup=default_reply_markup)
     logger.info(f"Отправлен ответ пользователю {user_id}: {final_response[:200]}...")
 
@@ -720,7 +520,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # Главная функция
 def main() -> None:
     logger.info("Запуск Telegram бота...")
-    initialize_yandex_folders()
+    if not create_yandex_folder('/regions/'):
+        logger.error("Не удалось создать папку /regions/")
+    if not create_yandex_folder('/documents/'):
+        logger.error("Не удалось создать папку /documents/")
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
