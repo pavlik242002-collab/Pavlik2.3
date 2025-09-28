@@ -25,10 +25,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения
-load_dotenv()  # Пытаемся загрузить .env для локальной разработки, если файл существует
+load_dotenv()  # Загружаем .env для локальной разработки
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
-XAI_TOKEN = os.getenv("XAI_TOKEN")  # Изменено на XAI_TOKEN для xAI API
+XAI_TOKEN = os.getenv("XAI_TOKEN")
 
 # Отладка: выводим статус переменных
 logger.info(f"TELEGRAM_TOKEN: {'Set' if TELEGRAM_TOKEN else 'Not set'}")
@@ -99,128 +99,7 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-# Функции для работы с Yandex Disk для persistent storage (для Railway)
-BOT_DATA_FOLDER = "/bot_data/"
-
-def download_json_from_yandex(file_path: str, default_value: Any) -> Any:
-    """Скачивает JSON файл с Yandex Disk или возвращает default, если не существует."""
-    download_url = get_yandex_disk_file(file_path)
-    if download_url:
-        try:
-            response = requests.get(download_url)
-            if response.status_code == 200:
-                return json.loads(response.content.decode('utf-8'))
-            else:
-                logger.warning(f"Файл {file_path} не найден на Yandex, возвращаем default.")
-        except Exception as e:
-            logger.error(f"Ошибка при скачивании {file_path}: {str(e)}")
-    else:
-        logger.warning(f"Не удалось получить ссылку на {file_path}, возвращаем default.")
-    return default_value
-
-def upload_json_to_yandex(data: Any, file_path: str) -> bool:
-    """Загружает JSON файл на Yandex Disk."""
-    json_content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
-    file_name = os.path.basename(file_path)
-    folder_path = os.path.dirname(file_path)
-    return upload_to_yandex_disk(json_content, file_name, folder_path)
-
-# Функции для работы с администраторами (persistent на Yandex)
-def load_allowed_admins() -> List[int]:
-    """Загружает список ID администраторов с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_admins.json"
-    default = [123456789]  # Замени на свой Telegram ID
-    admins = download_json_from_yandex(file_path, default)
-    if admins == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
-    return admins
-
-def save_allowed_admins(allowed_admins: List[int]) -> None:
-    """Сохраняет список ID администраторов на Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_admins.json"
-    if upload_json_to_yandex(allowed_admins, file_path):
-        logger.info("Список администраторов сохранён на Yandex.")
-    else:
-        logger.error("Ошибка при сохранении allowed_admins.json на Yandex.")
-
-# Функции для работы с пользователями (persistent на Yandex)
-def load_allowed_users() -> List[int]:
-    """Загружает список ID разрешённых пользователей с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_users.json"
-    default = []
-    users = download_json_from_yandex(file_path, default)
-    if users == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
-    return users
-
-def save_allowed_users(allowed_users: List[int]) -> None:
-    """Сохраняет список ID разрешённых пользователей на Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_users.json"
-    if upload_json_to_yandex(allowed_users, file_path):
-        logger.info("Список пользователей сохранён на Yandex.")
-    else:
-        logger.error("Ошибка при сохранении allowed_users.json на Yandex.")
-
-# Функции для профилей пользователей (persistent на Yandex)
-def load_user_profiles() -> Dict[int, Dict[str, str]]:
-    """Загружает профили пользователей с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}user_profiles.json"
-    default = {}
-    profiles = download_json_from_yandex(file_path, default)
-    if profiles == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
-    return profiles
-
-def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
-    """Сохраняет профили пользователей на Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}user_profiles.json"
-    if upload_json_to_yandex(profiles, file_path):
-        logger.info(f"Профили успешно сохранены на Yandex: {profiles}")
-    else:
-        logger.error("Ошибка при сохранении user_profiles.json на Yandex.")
-
-# Функции для базы знаний (persistent на Yandex)
-def load_knowledge_base() -> List[str]:
-    """Загружает базу знаний с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}knowledge_base.json"
-    default = {"facts": []}
-    data = download_json_from_yandex(file_path, default)
-    if data == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
-    facts = data.get('facts', [])
-    logger.info(f"Загружено {len(facts)} фактов с Yandex.")
-    return facts
-
-def save_knowledge_base(facts: List[str]) -> None:
-    """Сохраняет базу знаний на Yandex Disk."""
-    data = {"facts": facts}
-    file_path = f"{BOT_DATA_FOLDER}knowledge_base.json"
-    if upload_json_to_yandex(data, file_path):
-        logger.info(f"База знаний сохранена на Yandex с {len(facts)} фактами.")
-    else:
-        logger.error("Ошибка при сохранении knowledge_base.json на Yandex.")
-
-# Инициализация глобальных переменных (загружаем с Yandex)
-ALLOWED_ADMINS = load_allowed_admins()
-ALLOWED_USERS = load_allowed_users()
-USER_PROFILES = load_user_profiles()
-KNOWLEDGE_BASE = load_knowledge_base()
-
-# Новый системный промпт для ИИ
-system_prompt = """
-Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
-Обязательно используй актуальные данные из поиска в истории сообщений для ответов на вопросы о фактах, организациях или событиях.
-Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко.
-Если данных нет, используй свои знания и базу знаний, предоставленную системой.
-Не упоминая процесс поиска, источники или фразы вроде "не знаю" или "уточните".
-Всегда учитывай полный контекст разговора.
-Отвечай кратко, по делу, на русском языке, без лишних объяснений.
-"""
-
-# Хранение истории переписки
-histories: Dict[int, Dict[str, Any]] = {}
-
-# Функции для работы с Яндекс.Диском
+# Функции для работы с Яндекс.Диском (перемещены выше для устранения NameError)
 def create_yandex_folder(folder_path: str) -> bool:
     """Создаёт папку на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
@@ -232,7 +111,7 @@ def create_yandex_folder(folder_path: str) -> bool:
             logger.info(f"Папка {folder_path} уже существует.")
             return True
         if response.status_code == 401:
-            logger.error(f"401 Unauthorized для папки {folder_path}. Проверьте YANDEX_TOKEN (возможно, истёк или неверный).")
+            logger.error(f"401 Unauthorized для папки {folder_path}. Проверьте YANDEX_TOKEN.")
             return False
         response = requests.put(url, headers=headers)
         if response.status_code in (201, 409):
@@ -354,6 +233,127 @@ def delete_yandex_disk_file(file_path: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
         return False
+
+# Функции для работы с Yandex Disk для persistent storage
+BOT_DATA_FOLDER = "/bot_data/"
+
+def download_json_from_yandex(file_path: str, default_value: Any) -> Any:
+    """Скачивает JSON файл с Yandex Disk или возвращает default, если не существует."""
+    download_url = get_yandex_disk_file(file_path)
+    if download_url:
+        try:
+            response = requests.get(download_url)
+            if response.status_code == 200:
+                return json.loads(response.content.decode('utf-8'))
+            else:
+                logger.warning(f"Файл {file_path} не найден на Yandex, возвращаем default.")
+        except Exception as e:
+            logger.error(f"Ошибка при скачивании {file_path}: {str(e)}")
+    else:
+        logger.warning(f"Не удалось получить ссылку на {file_path}, возвращаем default.")
+    return default_value
+
+def upload_json_to_yandex(data: Any, file_path: str) -> bool:
+    """Загружает JSON файл на Yandex Disk."""
+    json_content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+    file_name = os.path.basename(file_path)
+    folder_path = os.path.dirname(file_path)
+    return upload_to_yandex_disk(json_content, file_name, folder_path)
+
+# Функции для работы с администраторами (persistent на Yandex)
+def load_allowed_admins() -> List[int]:
+    """Загружает список ID администраторов с Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}allowed_admins.json"
+    default = [123456789]  # Замени на свой Telegram ID
+    admins = download_json_from_yandex(file_path, default)
+    if admins == default:
+        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    return admins
+
+def save_allowed_admins(allowed_admins: List[int]) -> None:
+    """Сохраняет список ID администраторов на Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}allowed_admins.json"
+    if upload_json_to_yandex(allowed_admins, file_path):
+        logger.info("Список администраторов сохранён на Yandex.")
+    else:
+        logger.error("Ошибка при сохранении allowed_admins.json на Yandex.")
+
+# Функции для работы с пользователями (persistent на Yandex)
+def load_allowed_users() -> List[int]:
+    """Загружает список ID разрешённых пользователей с Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}allowed_users.json"
+    default = []
+    users = download_json_from_yandex(file_path, default)
+    if users == default:
+        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    return users
+
+def save_allowed_users(allowed_users: List[int]) -> None:
+    """Сохраняет список ID разрешённых пользователей на Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}allowed_users.json"
+    if upload_json_to_yandex(allowed_users, file_path):
+        logger.info("Список пользователей сохранён на Yandex.")
+    else:
+        logger.error("Ошибка при сохранении allowed_users.json на Yandex.")
+
+# Функции для профилей пользователей (persistent на Yandex)
+def load_user_profiles() -> Dict[int, Dict[str, str]]:
+    """Загружает профили пользователей с Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}user_profiles.json"
+    default = {}
+    profiles = download_json_from_yandex(file_path, default)
+    if profiles == default:
+        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    return profiles
+
+def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
+    """Сохраняет профили пользователей на Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}user_profiles.json"
+    if upload_json_to_yandex(profiles, file_path):
+        logger.info(f"Профили успешно сохранены на Yandex: {profiles}")
+    else:
+        logger.error("Ошибка при сохранении user_profiles.json на Yandex.")
+
+# Функции для базы знаний (persistent на Yandex)
+def load_knowledge_base() -> List[str]:
+    """Загружает базу знаний с Yandex Disk."""
+    file_path = f"{BOT_DATA_FOLDER}knowledge_base.json"
+    default = {"facts": []}
+    data = download_json_from_yandex(file_path, default)
+    if data == default:
+        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    facts = data.get('facts', [])
+    logger.info(f"Загружено {len(facts)} фактов с Yandex.")
+    return facts
+
+def save_knowledge_base(facts: List[str]) -> None:
+    """Сохраняет базу знаний на Yandex Disk."""
+    data = {"facts": facts}
+    file_path = f"{BOT_DATA_FOLDER}knowledge_base.json"
+    if upload_json_to_yandex(data, file_path):
+        logger.info(f"База знаний сохранена на Yandex с {len(facts)} фактами.")
+    else:
+        logger.error("Ошибка при сохранении knowledge_base.json на Yandex.")
+
+# Инициализация глобальных переменных (загружаем с Yandex)
+ALLOWED_ADMINS = load_allowed_admins()
+ALLOWED_USERS = load_allowed_users()
+USER_PROFILES = load_user_profiles()
+KNOWLEDGE_BASE = load_knowledge_base()
+
+# Новый системный промпт для ИИ
+system_prompt = """
+Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
+Обязательно используй актуальные данные из поиска в истории сообщений для ответов на вопросы о фактах, организациях или событиях.
+Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко.
+Если данных нет, используй свои знания и базу знаний, предоставленную системой.
+Не упоминая процесс поиска, источники или фразы вроде "не знаю" или "уточните".
+Всегда учитывай полный контекст разговора.
+Отвечай кратко, по делу, на русском языке, без лишних объяснений.
+"""
+
+# Хранение истории переписки
+histories: Dict[int, Dict[str, Any]] = {}
 
 # Функция веб-поиска
 def web_search(query: str) -> str:
