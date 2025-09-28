@@ -93,16 +93,20 @@ FEDERAL_DISTRICTS = {
 
 # Функции для работы с PostgreSQL
 def get_db_connection():
-    """Получает соединение с БД."""
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL не установлен!")
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        logger.info("Успешное соединение с PostgreSQL.")
-        return conn
-    except Exception as e:
-        logger.error(f"Ошибка подключения к базе данных: {str(e)}")
-        raise
+    """Получает соединение с БД с повторными попытками."""
+    import time
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            logger.info("Успешное соединение с PostgreSQL.")
+            return conn
+        except Exception as e:
+            logger.error(f"Ошибка подключения к базе данных (попытка {attempt + 1}/{attempts}): {str(e)}")
+            if attempt < attempts - 1:
+                time.sleep(2)  # Ждать 2 секунды перед повторной попыткой
+            else:
+                raise
 
 def check_table_exists(table_name: str) -> bool:
     """Проверяет, существует ли таблица в базе данных."""
@@ -178,6 +182,24 @@ def init_db():
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
         raise
+
+def check_allowed_users() -> List[Dict[str, Any]]:
+    """Проверяет содержимое таблицы allowed_users."""
+    try:
+        if not check_table_exists("allowed_users"):
+            logger.error("Таблица allowed_users не существует. Инициализируем базу данных.")
+            init_db()
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM public.allowed_users LIMIT 10;")
+        users = cur.fetchall()
+        cur.close()
+        conn.close()
+        logger.info(f"Найдено {len(users)} пользователей в таблице allowed_users.")
+        return users
+    except Exception as e:
+        logger.error(f"Ошибка при проверке таблицы allowed_users: {str(e)}")
+        return []
 
 def log_request(user_id: int, request_text: str, response_text: str) -> None:
     """Сохраняет запрос и ответ в таблицу user_requests."""
@@ -549,6 +571,22 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(response)
     log_request(user_id, f"/forget {fact}", response)
     logger.info(f"Администратор {user_id} удалил факт: {fact}")
+
+async def handle_check_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_ADMINS:
+        response = "Только администраторы могут просматривать таблицу allowed_users."
+        await update.message.reply_text(response)
+        log_request(user_id, "/check_users", response)
+        return
+    users = check_allowed_users()
+    if not users:
+        response = "Таблица allowed_users пуста или произошла ошибка."
+    else:
+        users_list = "\n".join([f"ID: {user['id']}, User ID: {user['user_id']}" for user in users])
+        response = f"Первые 10 пользователей:\n{users_list}"
+    await update.message.reply_text(response)
+    log_request(user_id, "/check_users", response)
 
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global ALLOWED_USERS, ALLOWED_ADMINS, USER_PROFILES
@@ -1405,3 +1443,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if need_search:
             logger.info(f"Выполняется поиск для запроса: {user_input}")
             search_results_json = web_search(user_input)
+            # Здесь может быть логика обработки результатов поиска, если требуется
+            response = "Поиск выполнен, но обработка результатов не реализована."
+            await update.message.reply_text(response)
+            log_request(user_id, user_input, response)
+
+def main() -> None:
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", send_welcome))
+    application.add_handler(CommandHandler("learn", handle_learn))
+    application.add_handler(CommandHandler("forget", handle_forget))
+    application.add_handler(CommandHandler("getfile", get_file))
+    application.add_handler(CommandHandler("check_users", handle_check_users))
+    application.add_handler(MessageHandler(filters
