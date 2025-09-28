@@ -136,7 +136,7 @@ def init_db():
                 region TEXT
             );
         """)
-        logger.info("Таблица user_profiles ее или уже существует.")
+        logger.info("Таблица user_profiles создана или уже существует.")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_requests (
                 id SERIAL PRIMARY KEY,
@@ -1436,21 +1436,4 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
     update = Update.de_json(request.get_json(), application.bot)
-    application.process_update(update)
-    return 'OK'
-
-application: Optional[Application] = None
-
-def main() -> None:
-    global application
-    logger.info("Запуск Telegram бота на Railway...")
-    init_db()
-    create_yandex_folder('/regions/')
-    create_yandex_folder('/documents/')
-
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", send_welcome))
-    application.add_handler(CommandHandler("getfile", get_file))
-    application.add_handler(CommandHandler("learn", handle_learn))
-    application.add_handler(CommandHandler("forget", handle_forget))
-    application.add_handler(MessageHandler(filters.TEXT & ~
+    application.process
