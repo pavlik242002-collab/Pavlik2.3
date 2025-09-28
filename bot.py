@@ -138,7 +138,7 @@ def init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS allowed_admins (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER UNIQUE NOT NULL
+                user_id BIGINT UNIQUE NOT NULL
             );
         """)
         logger.info("Таблица allowed_admins создана или уже существует.")
@@ -146,14 +146,14 @@ def init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS allowed_users (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER UNIQUE NOT NULL
+                user_id BIGINT UNIQUE NOT NULL
             );
         """)
         logger.info("Таблица allowed_users создана или уже существует.")
         # Создание таблицы user_profiles
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_profiles (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 fio TEXT,
                 name TEXT,
                 region TEXT
@@ -164,7 +164,7 @@ def init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_requests (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
                 request_text TEXT,
                 response_text TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -172,7 +172,7 @@ def init_db():
         """)
         logger.info("Таблица user_requests создана или уже существует.")
         # Инициализируем с дефолтным админом
-        default_admin = 123456789  # Замените на ваш Telegram user_id
+        default_admin = 6909708460  # Ваш Telegram user_id
         cur.execute("INSERT INTO allowed_admins (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING;", (default_admin,))
         logger.info(f"Добавлен дефолтный админ с user_id {default_admin}.")
         conn.commit()
