@@ -73,37 +73,33 @@ def get_db_connection():
 
 
 def init_db():
-    """Инициализирует таблицы в БД, если они не существуют."""
+    """Инициализирует таблицы в БД и добавляет админа."""
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Таблица для администраторов (ID как BIGINT для Telegram IDs)
+        # Создание таблиц с BIGINT
         cur.execute("""
             CREATE TABLE IF NOT EXISTS allowed_admins (
                 id BIGINT PRIMARY KEY
             );
         """)
-        # Таблица для пользователей
         cur.execute("""
             CREATE TABLE IF NOT EXISTS allowed_users (
                 id BIGINT PRIMARY KEY
             );
         """)
-        # Таблица для профилей пользователей (user_id как ключ, profile как JSON)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_profiles (
                 user_id BIGINT PRIMARY KEY,
                 profile JSONB
             );
         """)
-        # Таблица для базы знаний (facts как массив строк, но для простоты - отдельные записи)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS knowledge_base (
                 id SERIAL PRIMARY KEY,
                 fact TEXT NOT NULL
             );
         """)
-        # Таблица для логов запросов (для просмотра registrations и запросов)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS request_logs (
                 id SERIAL PRIMARY KEY,
@@ -113,8 +109,15 @@ def init_db():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # Исправление типов (если таблицы созданы ранее с INTEGER)
+        cur.execute("ALTER TABLE allowed_admins ALTER COLUMN id TYPE BIGINT;")
+        cur.execute("ALTER TABLE allowed_users ALTER COLUMN id TYPE BIGINT;")
+        cur.execute("ALTER TABLE user_profiles ALTER COLUMN user_id TYPE BIGINT;")
+        cur.execute("ALTER TABLE request_logs ALTER COLUMN user_id TYPE BIGINT;")
+        # Добавление вашего ID как админа
+        cur.execute("INSERT INTO allowed_admins (id) VALUES (%s) ON CONFLICT DO NOTHING;", (6909708460,))
         conn.commit()
-        logger.info("Таблицы в БД инициализированы.")
+        logger.info("Таблицы в БД инициализированы, типы исправлены, админ 6909708460 добавлен.")
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {str(e)}")
     finally:
