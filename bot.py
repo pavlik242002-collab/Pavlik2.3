@@ -136,7 +136,7 @@ def init_db():
                 region TEXT
             );
         """)
-        logger.info("Таблица user_profiles создана или уже существует.")
+        logger.info("Таблица user_profiles ее или уже существует.")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_requests (
                 id SERIAL PRIMARY KEY,
@@ -1450,4 +1450,7 @@ def main() -> None:
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", send_welcome))
-    application.add_handler(CommandHandler
+    application.add_handler(CommandHandler("getfile", get_file))
+    application.add_handler(CommandHandler("learn", handle_learn))
+    application.add_handler(CommandHandler("forget", handle_forget))
+    application.add_handler(MessageHandler(filters.TEXT & ~
