@@ -47,7 +47,7 @@ except Exception as e:
     raise ValueError("Не удалось подключиться к базе данных.")
 
 
-# Функция для инициализации таблиц (с опцией удаления старых)
+# Функция для инициализации таблиц
 def init_db(conn, force_recreate=False):
     try:
         with conn.cursor() as cur:
@@ -107,7 +107,7 @@ def init_db(conn, force_recreate=False):
 
 
 # Инициализируем таблицы при запуске
-init_db(conn, force_recreate=False)  # Измени на True, если нужно очистить таблицы
+init_db(conn, force_recreate=False)  # Установи True, если нужно пересоздать таблицы
 
 # Инициализация клиента OpenAI
 client = OpenAI(
@@ -1452,4 +1452,19 @@ def main() -> None:
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
-        app.add_handler(CommandHandler("
+        app.add_handler(CommandHandler("learn", handle_learn))
+        app.add_handler(CommandHandler("forget", handle_forget))
+        app.add_handler(CommandHandler("getfile", get_file))
+        app.add_handler(CommandHandler("debug_tables", handle_debug_tables))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        app.add_handler(CallbackQueryHandler(handle_callback_query))
+        app.add_error_handler(error_handler)
+        app.run_polling()
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {str(e)}")
+        raise
+
+
+if __name__ == '__main__':
+    main()
