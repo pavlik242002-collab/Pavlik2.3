@@ -56,18 +56,31 @@ client = OpenAI(
 # Функция для загрузки knowledge_base.json
 def load_knowledge_base_json() -> Dict[str, str]:
     """Загружает базу знаний из файла knowledge_base.json."""
+    file_path = 'knowledge_base.json'
     try:
-        if not os.path.exists('knowledge_base.json'):
-            logger.warning("Файл knowledge_base.json не найден, создаётся пустой.")
-            with open('knowledge_base.json', 'w', encoding='utf-8') as f:
+        # Проверяем наличие файла
+        if not os.path.exists(file_path):
+            logger.warning(f"Файл {file_path} не найден, создаётся пустой.")
+            with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump({}, f, ensure_ascii=False)
             return {}
-        with open('knowledge_base.json', 'r', encoding='utf-8') as f:
-            knowledge = json.load(f)
-            logger.info(f"Загружено {len(knowledge)} записей из knowledge_base.json")
+        # Проверяем, является ли файл пустым или некорректным
+        with open(file_path, 'r', encoding='utf-8') as f:
+            file_content = f.read().strip()
+            if not file_content:
+                logger.warning(f"Файл {file_path} пуст, возвращается пустой словарь.")
+                return {}
+            knowledge = json.loads(file_content)
+            if not isinstance(knowledge, dict):
+                logger.error(f"Файл {file_path} содержит некорректные данные, ожидается словарь.")
+                return {}
+            logger.info(f"Загружено {len(knowledge)} записей из {file_path}: {list(knowledge.keys())}")
             return knowledge
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка декодирования JSON в {file_path}: {str(e)}")
+        return {}
     except Exception as e:
-        logger.error(f"Ошибка при загрузке knowledge_base.json: {str(e)}")
+        logger.error(f"Ошибка при загрузке {file_path}: {str(e)}")
         return {}
 
 # Инициализация таблиц в PostgreSQL
@@ -774,18 +787,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Обработка запросов к базе знаний и ИИ
     if not handled:
-        # Проверка в knowledge_base.json
-        response = KNOWLEDGE_BASE_JSON.get(user_input, None)
-        if response:
-            await update.message.reply_text(response, reply_markup=default_reply_markup)
-            log_request(user_id, user_input, response)
-            return
+        # Проверка в knowledge_base.json с регистронезависимым поиском
+        user_input_lower = user_input.lower()
+        for key, value in KNOWLEDGE_BASE_JSON.items():
+            if user_input_lower in key.lower():
+                await update.message.reply_text(value, reply_markup=default_reply_markup)
+                log_request(user_id, user_input, value)
+                logger.info(f"Ответ найден в knowledge_base.json для запроса '{user_input}': {value}")
+                return
 
         # Проверка в базе знаний PostgreSQL
         for fact in KNOWLEDGE_BASE_DB:
-            if user_input.lower() in fact.lower():
+            if user_input_lower in fact.lower():
                 await update.message.reply_text(fact, reply_markup=default_reply_markup)
                 log_request(user_id, user_input, fact)
+                logger.info(f"Ответ найден в knowledge_base (DB) для запроса '{user_input}': {fact}")
                 return
 
         # Запрос к Grok API с попыткой нескольких моделей
