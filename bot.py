@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import InputFile
 from urllib.parse import quote
 from openai import OpenAI
-import psycopg2  # Добавлен импорт для работы с Postgres
+import psycopg2  # Для работы с Postgres
 
 # Настройка логирования
 logging.basicConfig(
@@ -31,30 +31,78 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
-DB_HOST = os.getenv("PGHOST")  # Изменено на PGHOST от Railway
-DB_USER = os.getenv("PGUSER")  # Изменено на PGUSER
-DB_PASSWORD = os.getenv("PGPASSWORD")  # Изменено на PGPASSWORD
-DB_NAME = os.getenv("PGDATABASE")  # Изменено на PGDATABASE
-DB_PORT = os.getenv("PGPORT", "5432")  # Изменено на PGPORT, с дефолтом 5432
+DATABASE_URL = os.getenv("DATABASE_URL")  # Полная строка подключения от Railway
 
-# Проверка токенов
-if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN]):
-    logger.error("Токены не найдены в .env файле!")
-    raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN в .env")
+# Проверка токенов и DATABASE_URL
+if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
+    logger.error("Токены или DATABASE_URL не найдены в .env файле!")
+    raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL в .env")
 
 # Подключение к Postgres
 try:
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        dbname=DB_NAME,
-        port=DB_PORT
-    )
+    conn = psycopg2.connect(DATABASE_URL)
     logger.info("Подключение к Postgres успешно.")
 except Exception as e:
     logger.error(f"Ошибка подключения к Postgres: {str(e)}")
     raise ValueError("Не удалось подключиться к базе данных.")
+
+
+# Функция для инициализации таблиц (создаёт их, если не существуют)
+def init_db(conn):
+    try:
+        with conn.cursor() as cur:
+            # Создание таблицы allowed_admins
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS allowed_admins (
+                    id BIGINT NOT NULL PRIMARY KEY
+                );
+            """)
+            # Создание таблицы allowed_users
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS allowed_users (
+                    id BIGINT NOT NULL PRIMARY KEY
+                );
+            """)
+            # Создание таблицы user_profiles
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    user_id BIGINT NOT NULL PRIMARY KEY,
+                    fio TEXT,
+                    name TEXT,
+                    region TEXT
+                );
+            """)
+            # Создание таблицы knowledge_base
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_base (
+                    id SERIAL PRIMARY KEY,
+                    fact TEXT NOT NULL
+                );
+            """)
+            # Создание таблицы request_logs
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS request_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    request TEXT NOT NULL,
+                    response TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            # Вставка главного администратора по умолчанию
+            cur.execute("""
+                INSERT INTO allowed_admins (id) VALUES (6909708460) ON CONFLICT DO NOTHING;
+            """)
+            conn.commit()
+            logger.info("Все таблицы успешно созданы или уже существуют.")
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
+        conn.rollback()  # Откат изменений при ошибке
+        raise
+
+
+# Инициализируем таблицы при запуске
+init_db(conn)
 
 # Инициализация клиента OpenAI
 client = OpenAI(
@@ -108,7 +156,7 @@ FEDERAL_DISTRICTS = {
 }
 
 
-# Функции для работы с администраторами (теперь с БД)
+# Функции для работы с администраторами (с БД)
 def load_allowed_admins() -> List[int]:
     """Загружает список ID администраторов из БД."""
     try:
@@ -140,7 +188,7 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
         logger.error(f"Ошибка при сохранении allowed_admins: {str(e)}")
 
 
-# Функции для работы с пользователями (теперь с БД)
+# Функции для работы с пользователями (с БД)
 def load_allowed_users() -> List[int]:
     """Загружает список ID разрешённых пользователей из БД."""
     try:
@@ -165,7 +213,7 @@ def save_allowed_users(allowed_users: List[int]) -> None:
         logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
 
 
-# Функции для профилей пользователей (теперь с БД)
+# Функции для профилей пользователей (с БД)
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
     """Загружает профили пользователей из БД."""
     try:
@@ -197,7 +245,7 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
         raise
 
 
-# Функции для базы знаний (теперь с БД)
+# Функции для базы знаний (с БД)
 def load_knowledge_base() -> List[str]:
     """Загружает базу знаний из БД."""
     try:
@@ -279,7 +327,7 @@ system_prompt = """
 histories: Dict[int, Dict[str, Any]] = {}
 
 
-# Функции для работы с Яндекс.Диском (остаются без изменений)
+# Функции для работы с Яндекс.Диском
 def create_yandex_folder(folder_path: str) -> bool:
     """Создаёт папку на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
