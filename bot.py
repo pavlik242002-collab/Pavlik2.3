@@ -32,7 +32,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")  # Модель по умолчанию, можно переопределить в .env
+XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")  # Модель по умолчанию, переопределяется в .env
 
 # Проверка токенов и DATABASE_URL
 if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
@@ -53,7 +53,6 @@ client = OpenAI(
     api_key=XAI_TOKEN,
 )
 
-
 # Функция для загрузки knowledge_base.json
 def load_knowledge_base_json() -> Dict[str, str]:
     """Загружает базу знаний из файла knowledge_base.json."""
@@ -71,68 +70,123 @@ def load_knowledge_base_json() -> Dict[str, str]:
         logger.error(f"Ошибка при загрузке knowledge_base.json: {str(e)}")
         return {}
 
-
 # Инициализация таблиц в PostgreSQL
-def init_db(conn, force_recreate=False):
-    """Создаёт или обновляет таблицы в базе данных."""
+def init_db(conn):
+    """Создаёт таблицы в базе данных, если они не существуют, сохраняя существующие данные."""
     try:
         with conn.cursor() as cur:
-            if force_recreate:
-                cur.execute(
-                    "DROP TABLE IF EXISTS request_logs, knowledge_base, user_profiles, allowed_users, allowed_admins;")
-                logger.info("Старые таблицы удалены.")
+            # Проверка и создание таблицы allowed_admins
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'allowed_admins'
+                );
+            """)
+            if not cur.fetchone()[0]:
+                cur.execute("""
+                    CREATE TABLE allowed_admins (
+                        id BIGINT NOT NULL PRIMARY KEY
+                    );
+                    INSERT INTO allowed_admins (id) VALUES (6909708460) ON CONFLICT DO NOTHING;
+                """)
+                logger.info("Таблица allowed_admins создана.")
+            else:
+                logger.info("Таблица allowed_admins уже существует.")
 
-            # Создание таблицы allowed_admins
+            # Проверка и создание таблицы allowed_users
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS allowed_admins (
-                    id BIGINT NOT NULL PRIMARY KEY
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'allowed_users'
                 );
             """)
-            # Создание таблицы allowed_users
+            if not cur.fetchone()[0]:
+                cur.execute("""
+                    CREATE TABLE allowed_users (
+                        id BIGINT NOT NULL PRIMARY KEY
+                    );
+                """)
+                logger.info("Таблица allowed_users создана.")
+            else:
+                logger.info("Таблица allowed_users уже существует.")
+
+            # Проверка и создание таблицы user_profiles
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS allowed_users (
-                    id BIGINT NOT NULL PRIMARY KEY
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'user_profiles'
                 );
             """)
-            # Создание таблицы user_profiles
+            if not cur.fetchone()[0]:
+                cur.execute("""
+                    CREATE TABLE user_profiles (
+                        user_id BIGINT NOT NULL PRIMARY KEY,
+                        fio TEXT,
+                        name TEXT,
+                        region TEXT
+                    );
+                """)
+                logger.info("Таблица user_profiles создана.")
+            else:
+                logger.info("Таблица user_profiles уже существует.")
+
+            # Проверка и создание таблицы knowledge_base
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS user_profiles (
-                    user_id BIGINT NOT NULL PRIMARY KEY,
-                    fio TEXT,
-                    name TEXT,
-                    region TEXT
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'knowledge_base'
                 );
             """)
-            # Создание таблицы knowledge_base
+            if not cur.fetchone()[0]:
+                cur.execute("""
+                    CREATE TABLE knowledge_base (
+                        id SERIAL PRIMARY KEY,
+                        fact TEXT NOT NULL
+                    );
+                """)
+                logger.info("Таблица knowledge_base создана.")
+            else:
+                logger.info("Таблица knowledge_base уже существует.")
+
+            # Проверка и создание таблицы request_logs
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS knowledge_base (
-                    id SERIAL PRIMARY KEY,
-                    fact TEXT NOT NULL
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'request_logs'
                 );
             """)
-            # Создание таблицы request_logs с правильной структурой
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS request_logs (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    request_text TEXT NOT NULL,
-                    response_text TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            # Вставка главного администратора
-            cur.execute("""
-                INSERT INTO allowed_admins (id) VALUES (6909708460) ON CONFLICT DO NOTHING;
-            """)
+            if not cur.fetchone()[0]:
+                cur.execute("""
+                    CREATE TABLE request_logs (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        request_text TEXT NOT NULL,
+                        response_text TEXT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                logger.info("Таблица request_logs создана.")
+            else:
+                # Проверка наличия столбца request_text
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.columns 
+                        WHERE table_name = 'request_logs' AND column_name = 'request_text'
+                    );
+                """)
+                if not cur.fetchone()[0]:
+                    cur.execute("ALTER TABLE request_logs ADD COLUMN request_text TEXT NOT NULL;")
+                    logger.info("Добавлен столбец request_text в таблицу request_logs.")
+                logger.info("Таблица request_logs уже существует.")
+
             conn.commit()
-            logger.info(f"Все таблицы успешно созданы или обновлены. Force recreate: {force_recreate}")
+            logger.info("Все таблицы проверены и созданы при необходимости.")
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
         conn.rollback()
         raise
 
-
-init_db(conn, force_recreate=True)  # Пересоздаём таблицы для исправления структуры
+init_db(conn)  # Инициализация таблиц без удаления данных
 
 # Словарь федеральных округов
 FEDERAL_DISTRICTS = {
@@ -179,7 +233,6 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-
 # Функции для работы с администраторами
 def load_allowed_admins() -> List[int]:
     try:
@@ -197,7 +250,6 @@ def load_allowed_admins() -> List[int]:
         conn.rollback()
         return [6909708460]
 
-
 def save_allowed_admins(allowed_admins: List[int]) -> None:
     try:
         with conn.cursor() as cur:
@@ -209,7 +261,6 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_admins: {str(e)}")
         conn.rollback()
-
 
 # Функции для работы с пользователями
 def load_allowed_users() -> List[int]:
@@ -224,7 +275,6 @@ def load_allowed_users() -> List[int]:
         conn.rollback()
         return []
 
-
 def save_allowed_users(allowed_users: List[int]) -> None:
     try:
         with conn.cursor() as cur:
@@ -236,7 +286,6 @@ def save_allowed_users(allowed_users: List[int]) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
         conn.rollback()
-
 
 # Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
@@ -253,7 +302,6 @@ def load_user_profiles() -> Dict[int, Dict[str, str]]:
         conn.rollback()
         return {}
 
-
 def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     try:
         with conn.cursor() as cur:
@@ -269,7 +317,6 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
         logger.error(f"Ошибка при сохранении user_profiles: {str(e)}")
         conn.rollback()
 
-
 # Функции для работы с базой знаний в PostgreSQL
 def load_knowledge_base_db() -> List[str]:
     try:
@@ -282,7 +329,6 @@ def load_knowledge_base_db() -> List[str]:
         logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
         conn.rollback()
         return []
-
 
 def add_knowledge_db(fact: str, facts: List[str]) -> List[str]:
     if fact.strip() and fact not in facts:
@@ -297,7 +343,6 @@ def add_knowledge_db(fact: str, facts: List[str]) -> List[str]:
             conn.rollback()
     return facts
 
-
 # Функция для логирования запросов
 def log_request(user_id: int, request: str, response: str) -> None:
     try:
@@ -311,7 +356,6 @@ def log_request(user_id: int, request: str, response: str) -> None:
     except Exception as e:
         logger.error(f"Ошибка при логировании запроса: {str(e)}")
         conn.rollback()
-
 
 # Функции для работы с Яндекс.Диском
 def create_yandex_folder(folder_path: str) -> bool:
@@ -332,7 +376,6 @@ def create_yandex_folder(folder_path: str) -> bool:
         logger.error(f"Ошибка при создании папки {folder_path}: {str(e)}")
         return False
 
-
 def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict[str, str]]:
     folder_path = folder_path.rstrip('/')
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(folder_path)}&fields=_embedded.items.name,_embedded.items.type,_embedded.items.path&limit=100'
@@ -350,11 +393,9 @@ def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict
         logger.error(f"Ошибка при запросе списка элементов: {str(e)}")
         return []
 
-
 def list_yandex_disk_directories(folder_path: str) -> List[str]:
     items = list_yandex_disk_items(folder_path, item_type='dir')
     return [item['name'] for item in items]
-
 
 def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     folder_path = folder_path.rstrip('/')
@@ -363,7 +404,6 @@ def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     files = [item for item in items if item['name'].lower().endswith(supported_extensions)]
     logger.info(f"Найдено {len(files)} файлов в папке {folder_path}")
     return files
-
 
 def get_yandex_disk_file(file_path: str) -> str | None:
     file_path = file_path.rstrip('/')
@@ -379,7 +419,6 @@ def get_yandex_disk_file(file_path: str) -> str | None:
     except Exception as e:
         logger.error(f"Ошибка при запросе файла {file_path}: {str(e)}")
         return None
-
 
 def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str) -> bool:
     folder_path = folder_path.rstrip('/')
@@ -403,7 +442,6 @@ def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str)
         logger.error(f"Ошибка при загрузке файла {file_path}: {str(e)}")
         return False
 
-
 # Инициализация глобальных переменных
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
@@ -421,13 +459,11 @@ system_prompt = """
 # Сохранение истории переписки
 histories: Dict[int, Dict[str, Any]] = {}
 
-
 # Обработчик команды /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = update.effective_user.id
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text(f"Ваш user_id: {user_id}\nИзвините, у вас нет доступа.",
-                                        reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"Ваш user_id: {user_id}\nИзвините, у вас нет доступа.", reply_markup=ReplyKeyboardRemove())
         return
     if user_id not in USER_PROFILES:
         context.user_data["awaiting_fio"] = True
@@ -439,7 +475,6 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Как я могу к Вам обращаться?", reply_markup=ReplyKeyboardRemove())
     else:
         await show_main_menu(update, context)
-
 
 # Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -456,8 +491,20 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_path', None)
     context.user_data.pop('file_list', None)
+    context.user_data.pop('awaiting_user_id', None)
+    context.user_data.pop('awaiting_admin_id', None)
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
+# Отображение меню управления пользователями
+async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = [
+        ['Добавить пользователя', 'Добавить администратора'],
+        ['Список пользователей', 'Список администраторов'],
+        ['Удалить файл'],
+        ['Назад']
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 # Отображение содержимого папки в /documents/
 async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, is_return: bool = False) -> None:
@@ -467,8 +514,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     folder_name = current_path.rstrip('/').split('/')[-1] or "Документы"
     if not create_yandex_folder(current_path):
         await update.message.reply_text(f"Ошибка: не удалось создать папку {current_path}.",
-                                        reply_markup=context.user_data.get('default_reply_markup',
-                                                                           ReplyKeyboardRemove()))
+                                       reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
         return
     files = list_yandex_disk_files(current_path)
     dirs = list_yandex_disk_directories(current_path)
@@ -480,8 +526,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     if files:
         context.user_data['file_list'] = files
-        file_keyboard = [[InlineKeyboardButton(item['name'], callback_data=f"doc_download:{idx}")] for idx, item in
-                         enumerate(files)]
+        file_keyboard = [[InlineKeyboardButton(item['name'], callback_data=f"doc_download:{idx}")] for idx, item in enumerate(files)]
         file_reply_markup = InlineKeyboardMarkup(file_keyboard)
         await update.message.reply_text(f"Файлы в папке {folder_name}:", reply_markup=file_reply_markup)
     elif dirs:
@@ -490,7 +535,6 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.message.reply_text(message, reply_markup=reply_markup)
     else:
         await update.message.reply_text(f"Папка {folder_name} пуста.", reply_markup=reply_markup)
-
 
 # Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -531,7 +575,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.message.reply_text(f"Ошибка: {str(e)}", reply_markup=default_reply_markup)
             logger.error(f"Ошибка при отправке файла: {str(e)}")
 
-
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = update.effective_user.id
@@ -554,8 +597,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["awaiting_fio"] = False
             context.user_data["awaiting_federal_district"] = True
             keyboard = [[district] for district in FEDERAL_DISTRICTS.keys()]
-            await update.message.reply_text("Выберите федеральный округ:",
-                                            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+            await update.message.reply_text("Выберите федеральный округ:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             return
         await update.message.reply_text("Сначала пройдите регистрацию с /start.")
         return
@@ -570,6 +612,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
     context.user_data['default_reply_markup'] = default_reply_markup
 
+    # Обработка ожидания user_id для добавления пользователя
+    if context.user_data.get("awaiting_user_id", False):
+        try:
+            new_user_id = int(user_input)
+            if new_user_id in ALLOWED_USERS:
+                await update.message.reply_text(f"Пользователь с ID {new_user_id} уже существует.", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+            else:
+                ALLOWED_USERS.append(new_user_id)
+                save_allowed_users(ALLOWED_USERS)
+                await update.message.reply_text(f"Пользователь с ID {new_user_id} успешно добавлен.", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+                logger.info(f"Пользователь {new_user_id} добавлен администратором {user_id}")
+            context.user_data.pop("awaiting_user_id", None)
+            return
+        except ValueError:
+            await update.message.reply_text("Пожалуйста, введите корректный user_id (число).", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+            return
+
+    # Обработка ожидания admin_id для добавления администратора
+    if context.user_data.get("awaiting_admin_id", False):
+        try:
+            new_admin_id = int(user_input)
+            if new_admin_id in ALLOWED_ADMINS:
+                await update.message.reply_text(f"Администратор с ID {new_admin_id} уже существует.", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+            else:
+                ALLOWED_ADMINS.append(new_admin_id)
+                save_allowed_admins(ALLOWED_ADMINS)
+                await update.message.reply_text(f"Администратор с ID {new_admin_id} успешно добавлен.", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+                logger.info(f"Администратор {new_admin_id} добавлен администратором {user_id}")
+            context.user_data.pop("awaiting_admin_id", None)
+            return
+        except ValueError:
+            await update.message.reply_text("Пожалуйста, введите корректный admin_id (число).", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+            return
+
     # Обработка регистрации
     if context.user_data.get("awaiting_federal_district", False):
         if user_input in FEDERAL_DISTRICTS:
@@ -578,11 +654,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["awaiting_region"] = True
             regions = FEDERAL_DISTRICTS[user_input]
             keyboard = [[region] for region in regions]
-            await update.message.reply_text("Выберите регион:",
-                                            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+            await update.message.reply_text("Выберите регион:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             return
-        await update.message.reply_text("Выберите из предложенных округов.", reply_markup=ReplyKeyboardMarkup(
-            [[district] for district in FEDERAL_DISTRICTS.keys()]))
+        await update.message.reply_text("Выберите из предложенных округов.", reply_markup=ReplyKeyboardMarkup([[district] for district in FEDERAL_DISTRICTS.keys()]))
         return
 
     if context.user_data.get("awaiting_region", False):
@@ -598,8 +672,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["awaiting_name"] = True
             await update.message.reply_text("Как я могу к Вам обращаться?", reply_markup=ReplyKeyboardRemove())
             return
-        await update.message.reply_text("Выберите из предложенных регионов.",
-                                        reply_markup=ReplyKeyboardMarkup([[region] for region in regions]))
+        await update.message.reply_text("Выберите из предложенных регионов.", reply_markup=ReplyKeyboardMarkup([[region] for region in regions]))
         return
 
     if context.user_data.get("awaiting_name", False):
@@ -607,8 +680,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         save_user_profiles(USER_PROFILES)
         context.user_data["awaiting_name"] = False
         await show_main_menu(update, context)
-        await update.message.reply_text(f"Рад знакомству, {user_input}! Задавайте вопросы или используйте меню.",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text(f"Рад знакомству, {user_input}! Задавайте вопросы или используйте меню.", reply_markup=default_reply_markup)
         return
 
     handled = False
@@ -631,21 +703,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут управлять пользователями.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Только администраторы могут управлять пользователями.", reply_markup=default_reply_markup)
             return
-        keyboard = [['Добавить пользователя', 'Добавить администратора'],
-                    ['Список пользователей', 'Список администраторов'], ['Удалить файл'], ['Назад']]
-        await update.message.reply_text("Выберите действие:",
-                                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        await show_admin_menu(update, context)
         handled = True
 
-    elif user_input == "Загрузить файл":
-        if not USER_PROFILES.get(user_id, {}).get("region"):
-            await update.message.reply_text("Ошибка: регион не определён.", reply_markup=default_reply_markup)
+    elif user_input == "Добавить пользователя":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Только администраторы могут добавлять пользователей.", reply_markup=default_reply_markup)
             return
-        context.user_data['awaiting_upload'] = True
-        await update.message.reply_text("Отправьте файл для загрузки.", reply_markup=default_reply_markup)
+        context.user_data["awaiting_user_id"] = True
+        await update.message.reply_text("Введите user_id нового пользователя (число):", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+        handled = True
+
+    elif user_input == "Добавить администратора":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Только администраторы могут добавлять администраторов.", reply_markup=default_reply_markup)
+            return
+        context.user_data["awaiting_admin_id"] = True
+        await update.message.reply_text("Введите user_id нового администратора (число):", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+        handled = True
+
+    elif user_input == "Список пользователей":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Только администраторы могут просматривать список пользователей.", reply_markup=default_reply_markup)
+            return
+        users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS]) or "Список пользователей пуст."
+        await update.message.reply_text(f"Список пользователей:\n{users_list}", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+        handled = True
+
+    elif user_input == "Список администраторов":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Только администраторы могут просматривать список администраторов.", reply_markup=default_reply_markup)
+            return
+        admins_list = "\n".join([f"ID: {aid}" for aid in ALLOWED_ADMINS]) or "Список администраторов пуст."
+        await update.message.reply_text(f"Список администраторов:\n{admins_list}", reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
+        handled = True
+
+    elif user_input == "Удалить файл":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Только администраторы могут удалять файлы.", reply_markup=default_reply_markup)
+            return
+        await show_file_list(update, context, for_deletion=True)
         handled = True
 
     elif user_input == "Назад":
@@ -689,29 +788,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 log_request(user_id, user_input, fact)
                 return
 
-        # Запрос к Grok API
+        # Запрос к Grok API с попыткой нескольких моделей
         if chat_id not in histories:
-            histories[chat_id] = {"name": USER_PROFILES[user_id]["name"],
-                                  "messages": [{"role": "system", "content": system_prompt}]}
+            histories[chat_id] = {"name": USER_PROFILES[user_id]["name"], "messages": [{"role": "system", "content": system_prompt}]}
         histories[chat_id]["messages"].append({"role": "user", "content": user_input})
-        try:
-            response = client.chat.completions.create(
-                model=XAI_MODEL,  # Используем переменную XAI_MODEL
-                messages=histories[chat_id]["messages"],
-                max_tokens=1000
-            )
-            ai_response = response.choices[0].message.content.strip()
+        models_to_try = [XAI_MODEL, "grok", "grok-3", "grok-4"]  # Список моделей для попыток
+        ai_response = None
+        error_msg = "Ошибка: Не удалось подключиться к ИИ. Проверьте настройки API или используйте базу знаний."
+        for model in models_to_try:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=histories[chat_id]["messages"],
+                    max_tokens=1000
+                )
+                ai_response = response.choices[0].message.content.strip()
+                logger.info(f"Успешный запрос к модели {model} для user_id {user_id}")
+                break
+            except Exception as e:
+                logger.error(f"Ошибка Grok API для модели {model}: {str(e)}")
+                if "404" in str(e):
+                    error_msg = f"Ошибка: Модель {model} недоступна. Проверьте XAI_TOKEN или обратитесь в поддержку xAI (team ID: 4c40134b-82d4-4d27-a7e0-c6566cc04178)."
+                continue
+
+        if ai_response:
             histories[chat_id]["messages"].append({"role": "assistant", "content": ai_response})
             await update.message.reply_text(ai_response, reply_markup=default_reply_markup)
             log_request(user_id, user_input, ai_response)
-        except Exception as e:
-            error_msg = "Ошибка при обращении к ИИ. Проверьте API-ключ или обратитесь в поддержку xAI."
-            if "404" in str(e):
-                error_msg = "Ошибка: Модель недоступна. Проверьте XAI_TOKEN и модель в .env или обратитесь в поддержку xAI."
+        else:
             await update.message.reply_text(error_msg, reply_markup=default_reply_markup)
-            logger.error(f"Ошибка Grok API: {str(e)}")
             log_request(user_id, user_input, error_msg)
-
 
 # Обработка загруженных документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -721,10 +827,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     document = update.message.document
     file_name = document.file_name
-    if not file_name.lower().endswith(
-            ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
-        await update.message.reply_text(
-            "Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
+    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
         return
     file_size = document.file_size / (1024 * 1024)
     if file_size > 50:
@@ -744,7 +848,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Ошибка обработки документа: {str(e)}")
     context.user_data.pop('awaiting_upload', None)
 
-
 # Отображение списка файлов
 async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
     user_id: int = update.effective_user.id
@@ -753,26 +856,24 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     create_yandex_folder(region_folder)
     files = list_yandex_disk_files(region_folder)
     if not files:
-        await update.message.reply_text(f"В папке {region_folder} нет файлов.",
-                                        reply_markup=context.user_data.get('default_reply_markup',
-                                                                           ReplyKeyboardRemove()))
+        await update.message.reply_text(f"В папке {region_folder} нет файлов.", reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
         return
     context.user_data['file_list'] = files
-    keyboard = [[InlineKeyboardButton(item['name'], callback_data=f"{'delete' if for_deletion else 'download'}:{idx}")]
-                for idx, item in enumerate(files)]
-    await update.message.reply_text("Выберите файл для удаления:" if for_deletion else "Список всех файлов:",
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
-
+    keyboard = [[InlineKeyboardButton(item['name'], callback_data=f"{'delete' if for_deletion else 'download'}:{idx}")] for idx, item in enumerate(files)]
+    await update.message.reply_text("Выберите файл для удаления:" if for_deletion else "Список всех файлов:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Основная функция
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", send_welcome))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler(handle_callback_query))
-    app.run_polling()
-
+    try:
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler("start", send_welcome))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        app.add_handler(CallbackQueryHandler(handle_callback_query))
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {str(e)}")
+        raise
 
 if __name__ == '__main__':
     main()
