@@ -31,11 +31,11 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
-DB_HOST = os.getenv("DB_HOST")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-DB_PORT = os.getenv("DB_PORT", "5432")
+DB_HOST = os.getenv("PGHOST")  # Изменено на PGHOST от Railway
+DB_USER = os.getenv("PGUSER")  # Изменено на PGUSER
+DB_PASSWORD = os.getenv("PGPASSWORD")  # Изменено на PGPASSWORD
+DB_NAME = os.getenv("PGDATABASE")  # Изменено на PGDATABASE
+DB_PORT = os.getenv("PGPORT", "5432")  # Изменено на PGPORT, с дефолтом 5432
 
 # Проверка токенов
 if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN]):
