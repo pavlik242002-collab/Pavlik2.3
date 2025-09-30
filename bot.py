@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import requests
+import json
 from typing import Dict, List, Any
 from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, Update
@@ -109,28 +110,6 @@ def init_db(conn):
                 logger.info("Таблица user_profiles создана.")
             else:
                 logger.info("Таблица user_profiles уже существует.")
-
-            # Проверка и создание таблицы knowledge_base с начальными фактами
-            cur.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'knowledge_base'
-                );
-            """)
-            if not cur.fetchone()[0]:
-                cur.execute("""
-                    CREATE TABLE knowledge_base (
-                        id SERIAL PRIMARY KEY,
-                        fact TEXT NOT NULL
-                    );
-                    INSERT INTO knowledge_base (fact) VALUES
-                        ('Привет! Чем могу помочь?'),
-                        ('Документы по награждениям находятся в папке /documents/Награждения.'),
-                        ('Всё отлично, спасибо за вопрос!');
-                """)
-                logger.info("Таблица knowledge_base создана с начальными фактами.")
-            else:
-                logger.info("Таблица knowledge_base уже существует.")
 
             # Проверка и создание таблицы request_logs
             cur.execute("""
@@ -300,33 +279,36 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
         logger.error(f"Ошибка при сохранении user_profiles: {str(e)}")
         conn.rollback()
 
-# Функции для работы с базой знаний в PostgreSQL
-def load_knowledge_base_db() -> List[str]:
+# Функции для работы с базой знаний в JSON
+def load_knowledge_base_json() -> List[str]:
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT fact FROM knowledge_base")
-            facts = [row[0].strip() for row in cur.fetchall()]
-            logger.info(f"Загружено {len(facts)} фактов из knowledge_base: {facts}")
-            return facts
+        if os.path.exists('knowledge_base.json'):
+            with open('knowledge_base.json', 'r', encoding='utf-8') as f:
+                facts = json.load(f)
+                if not isinstance(facts, list):
+                    facts = []
+                facts = [str(fact).strip() for fact in facts]
+        else:
+            facts = [
+                "Привет! Чем могу помочь?",
+                "Документы по награждениям находятся в папке /documents/Награждения.",
+                "Всё отлично, спасибо за вопрос!"
+            ]
+            with open('knowledge_base.json', 'w', encoding='utf-8') as f:
+                json.dump(facts, f, ensure_ascii=False, indent=4)
+        logger.info(f"Загружено {len(facts)} фактов из knowledge_base.json: {facts}")
+        return facts
     except Exception as e:
-        logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
-        conn.rollback()
+        logger.error(f"Ошибка при загрузке knowledge_base.json: {str(e)}")
         return []
 
-def add_knowledge_db(fact: str, facts: List[str]) -> List[str]:
-    fact = fact.strip()
-    if fact and fact not in facts:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact,))
-                conn.commit()
-                logger.info(f"Добавлен факт в БД: {fact}")
-            # Перезагружаем факты из базы для обновления KNOWLEDGE_BASE_DB
-            facts = load_knowledge_base_db()
-        except Exception as e:
-            logger.error(f"Ошибка при добавлении факта: {str(e)}")
-            conn.rollback()
-    return facts
+def save_knowledge_base_json(facts: List[str]) -> None:
+    try:
+        with open('knowledge_base.json', 'w', encoding='utf-8') as f:
+            json.dump(facts, f, ensure_ascii=False, indent=4)
+        logger.info(f"Сохранено {len(facts)} фактов в knowledge_base.json")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении knowledge_base.json: {str(e)}")
 
 # Функция для логирования запросов
 def log_request(user_id: int, request: str, response: str) -> None:
@@ -431,12 +413,12 @@ def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str)
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
-KNOWLEDGE_BASE_DB = load_knowledge_base_db()
+KNOWLEDGE_BASE_JSON = load_knowledge_base_json()
 
 # Системный промпт для ИИ
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует историю переписки. 
-Сначала проверяй базу знаний из PostgreSQL (таблица knowledge_base). Если ответа нет, используй свои знания.
+Сначала проверяй базу знаний из knowledge_base.json. Если ответа нет, используй свои знания.
 Отвечай кратко, на русском языке, без лишних объяснений.
 """
 
@@ -471,10 +453,14 @@ async def add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Использование: /add_fact <факт>", reply_markup=ReplyKeyboardRemove())
         return
     fact = ' '.join(args).strip()
-    global KNOWLEDGE_BASE_DB
-    KNOWLEDGE_BASE_DB = add_knowledge_db(fact, KNOWLEDGE_BASE_DB)
-    await update.message.reply_text(f"Факт '{fact}' добавлен в базу знаний.", reply_markup=ReplyKeyboardRemove())
-    logger.info(f"Факт '{fact}' добавлен администратором {user_id}")
+    global KNOWLEDGE_BASE_JSON
+    if fact not in KNOWLEDGE_BASE_JSON:
+        KNOWLEDGE_BASE_JSON.append(fact)
+        save_knowledge_base_json(KNOWLEDGE_BASE_JSON)
+        await update.message.reply_text(f"Факт '{fact}' добавлен в базу знаний.", reply_markup=ReplyKeyboardRemove())
+        logger.info(f"Факт '{fact}' добавлен администратором {user_id} в knowledge_base.json")
+    else:
+        await update.message.reply_text(f"Факт '{fact}' уже существует в базе знаний.", reply_markup=ReplyKeyboardRemove())
 
 # Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -774,22 +760,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Обработка запросов к базе знаний и ИИ
     if not handled:
-        # Проверка в базе знаний PostgreSQL
+        # Проверка в базе знаний JSON
         user_input_lower = user_input.lower().strip()
-        logger.info(f"Поиск в knowledge_base для запроса '{user_input_lower}'; доступные факты: {KNOWLEDGE_BASE_DB}")
-        for fact in KNOWLEDGE_BASE_DB:
+        logger.info(f"Поиск в knowledge_base.json для запроса '{user_input_lower}'; доступные факты: {KNOWLEDGE_BASE_JSON}")
+        for fact in KNOWLEDGE_BASE_JSON:
             fact_lower = fact.lower().strip()
             # Проверяем, начинается ли факт с запроса или содержит запрос
             if fact_lower.startswith(user_input_lower) or user_input_lower in fact_lower:
                 await update.message.reply_text(fact, reply_markup=default_reply_markup)
                 log_request(user_id, user_input, fact)
-                logger.info(f"Ответ найден в knowledge_base для запроса '{user_input}': {fact}")
+                logger.info(f"Ответ найден в knowledge_base.json для запроса '{user_input}': {fact}")
                 return
             else:
                 logger.debug(f"Факт '{fact}' не соответствует запросу '{user_input_lower}'")
 
         # Запрос к Grok API с попыткой нескольких моделей
-        logger.info(f"Факт для '{user_input}' не найден в knowledge_base, обращение к Grok API")
+        logger.info(f"Факт для '{user_input}' не найден в knowledge_base.json, обращение к Grok API")
         if chat_id not in histories:
             histories[chat_id] = {"name": USER_PROFILES[user_id]["name"], "messages": [{"role": "system", "content": system_prompt}]}
         histories[chat_id]["messages"].append({"role": "user", "content": user_input})
