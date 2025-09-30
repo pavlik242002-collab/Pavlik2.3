@@ -32,6 +32,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")  # Модель по умолчанию, можно переопределить в .env
 
 # Проверка токенов и DATABASE_URL
 if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
@@ -73,6 +74,7 @@ def load_knowledge_base_json() -> Dict[str, str]:
 
 # Инициализация таблиц в PostgreSQL
 def init_db(conn, force_recreate=False):
+    """Создаёт или обновляет таблицы в базе данных."""
     try:
         with conn.cursor() as cur:
             if force_recreate:
@@ -80,16 +82,19 @@ def init_db(conn, force_recreate=False):
                     "DROP TABLE IF EXISTS request_logs, knowledge_base, user_profiles, allowed_users, allowed_admins;")
                 logger.info("Старые таблицы удалены.")
 
+            # Создание таблицы allowed_admins
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS allowed_admins (
                     id BIGINT NOT NULL PRIMARY KEY
                 );
             """)
+            # Создание таблицы allowed_users
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS allowed_users (
                     id BIGINT NOT NULL PRIMARY KEY
                 );
             """)
+            # Создание таблицы user_profiles
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id BIGINT NOT NULL PRIMARY KEY,
@@ -98,21 +103,24 @@ def init_db(conn, force_recreate=False):
                     region TEXT
                 );
             """)
+            # Создание таблицы knowledge_base
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_base (
                     id SERIAL PRIMARY KEY,
                     fact TEXT NOT NULL
                 );
             """)
+            # Создание таблицы request_logs с правильной структурой
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS request_logs (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
-                    request TEXT NOT NULL,
-                    response TEXT,
+                    request_text TEXT NOT NULL,
+                    response_text TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            # Вставка главного администратора
             cur.execute("""
                 INSERT INTO allowed_admins (id) VALUES (6909708460) ON CONFLICT DO NOTHING;
             """)
@@ -124,7 +132,7 @@ def init_db(conn, force_recreate=False):
         raise
 
 
-init_db(conn, force_recreate=False)
+init_db(conn, force_recreate=True)  # Пересоздаём таблицы для исправления структуры
 
 # Словарь федеральных округов
 FEDERAL_DISTRICTS = {
@@ -135,7 +143,40 @@ FEDERAL_DISTRICTS = {
         "Смоленская область", "Тамбовская область", "Тверская область", "Тульская область",
         "Ярославская область", "Москва"
     ],
-    # ... (остальные округа остаются без изменений)
+    "Северо-Западный федеральный округ": [
+        "Республика Карелия", "Республика Коми", "Архангельская область", "Вологодская область",
+        "Ленинградская область", "Мурманская область", "Новгородская область", "Псковская область",
+        "Калининградская область", "Ненецкий автономный округ", "Санкт-Петербург"
+    ],
+    "Южный федеральный округ": [
+        "Республика Адыгея", "Республика Калмыкия", "Республика Крым", "Краснодарский край",
+        "Астраханская область", "Волгоградская область", "Ростовская область", "Севастополь"
+    ],
+    "Северо-Кавказский федеральный округ": [
+        "Республика Дагестан", "Республика Ингушетия", "Кабардино-Балкарская Республика",
+        "Карачаево-Черкесская Республика", "Республика Северная Осетия — Алания",
+        "Чеченская Республика", "Ставропольский край"
+    ],
+    "Приволжский федеральный округ": [
+        "Республика Башкортостан", "Республика Марий Эл", "Республика Мордовия", "Республика Татарстан",
+        "Удмуртская Республика", "Чувашская Республика", "Кировская область", "Нижегородская область",
+        "Оренбургская область", "Пензенская область", "Пермский край", "Самарская область",
+        "Саратовская область", "Ульяновская область"
+    ],
+    "Уральский федеральный округ": [
+        "Курганская область", "Свердловская область", "Тюменская область", "Ханты-Мансийский автономный округ — Югра",
+        "Челябинская область", "Ямало-Ненецкий автономный округ"
+    ],
+    "Сибирский федеральный округ": [
+        "Республика Алтай", "Республика Тыва", "Республика Хакасия", "Алтайский край",
+        "Красноярский край", "Иркутская область", "Кемеровская область", "Новосибирская область",
+        "Омская область", "Томская область"
+    ],
+    "Дальневосточный федеральный округ": [
+        "Республика Бурятия", "Республика Саха (Якутия)", "Забайкальский край", "Камчатский край",
+        "Приморский край", "Хабаровский край", "Амурская область", "Магаданская область",
+        "Сахалинская область", "Еврейская автономная область", "Чукотский автономный округ"
+    ]
 }
 
 
@@ -262,7 +303,7 @@ def log_request(user_id: int, request: str, response: str) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO request_logs (user_id, request, response, timestamp) VALUES (%s, %s, %s, NOW())",
+                "INSERT INTO request_logs (user_id, request_text, response_text, timestamp) VALUES (%s, %s, %s, NOW())",
                 (user_id, request, response)
             )
             conn.commit()
@@ -377,7 +418,7 @@ system_prompt = """
 Отвечай кратко, на русском языке, без лишних объяснений.
 """
 
-# Хранение истории переписки
+# Сохранение истории переписки
 histories: Dict[int, Dict[str, Any]] = {}
 
 
@@ -655,7 +696,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         histories[chat_id]["messages"].append({"role": "user", "content": user_input})
         try:
             response = client.chat.completions.create(
-                model="grok",
+                model=XAI_MODEL,  # Используем переменную XAI_MODEL
                 messages=histories[chat_id]["messages"],
                 max_tokens=1000
             )
@@ -664,9 +705,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(ai_response, reply_markup=default_reply_markup)
             log_request(user_id, user_input, ai_response)
         except Exception as e:
-            await update.message.reply_text("Ошибка при обращении к ИИ.", reply_markup=default_reply_markup)
+            error_msg = "Ошибка при обращении к ИИ. Проверьте API-ключ или обратитесь в поддержку xAI."
+            if "404" in str(e):
+                error_msg = "Ошибка: Модель недоступна. Проверьте XAI_TOKEN и модель в .env или обратитесь в поддержку xAI."
+            await update.message.reply_text(error_msg, reply_markup=default_reply_markup)
             logger.error(f"Ошибка Grok API: {str(e)}")
-            log_request(user_id, user_input, "Ошибка ИИ")
+            log_request(user_id, user_input, error_msg)
 
 
 # Обработка загруженных документов
