@@ -48,7 +48,7 @@ except Exception as e:
 
 
 # Функция для инициализации таблиц (с опцией удаления старых)
-def init_db(conn, force_recreate=False):
+def init_db(conn, force_recreate=True):
     try:
         with conn.cursor() as cur:
             if force_recreate:
