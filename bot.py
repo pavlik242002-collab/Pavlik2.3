@@ -12,6 +12,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import InputFile
 from urllib.parse import quote
 from openai import OpenAI
+import psycopg2
+from psycopg2.extras import Json as PsJson
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,11 +31,21 @@ load_dotenv()  # Загружаем .env для локальной разраб�
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
 # Отладка: выводим статус переменных
 logger.info(f"TELEGRAM_TOKEN: {'Set' if TELEGRAM_TOKEN else 'Not set'}")
 logger.info(f"YANDEX_TOKEN: {'Set' if YANDEX_TOKEN else 'Not set'}")
 logger.info(f"XAI_TOKEN: {'Set' if XAI_TOKEN else 'Not set'}")
+logger.info(f"DB_HOST: {'Set' if DB_HOST else 'Not set'}")
+logger.info(f"DB_NAME: {'Set' if DB_NAME else 'Not set'}")
+logger.info(f"DB_USER: {'Set' if DB_USER else 'Not set'}")
+logger.info(f"DB_PASSWORD: {'Set' if DB_PASSWORD else 'Not set'}")
+logger.info(f"DB_PORT: {DB_PORT}")
 
 # Проверка токенов
 missing_tokens = []
@@ -43,10 +55,67 @@ if not YANDEX_TOKEN:
     missing_tokens.append("YANDEX_TOKEN")
 if not XAI_TOKEN:
     missing_tokens.append("XAI_TOKEN")
+if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
+    missing_tokens.append("PostgreSQL credentials")
 
 if missing_tokens:
     logger.error(f"Отсутствуют переменные окружения: {', '.join(missing_tokens)}")
     raise ValueError(f"Необходимо задать следующие переменные окружения: {', '.join(missing_tokens)}")
+
+# Подключение к PostgreSQL
+def get_db_connection():
+    return psycopg2.connect(
+        host=DB_HOST,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        port=DB_PORT
+    )
+
+# Инициализация таблиц в БД
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # allowed_admins
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS allowed_admins (
+            id SERIAL PRIMARY KEY,
+            admin_id BIGINT UNIQUE NOT NULL
+        );
+    """)
+    # allowed_users
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS allowed_users (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT UNIQUE NOT NULL
+        );
+    """)
+    # user_profiles
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id BIGINT PRIMARY KEY,
+            profile JSONB NOT NULL
+        );
+    """)
+    # knowledge_base
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_base (
+            id SERIAL PRIMARY KEY,
+            fact TEXT UNIQUE NOT NULL
+        );
+    """)
+    # request_logs
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS request_logs (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            message TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # Инициализация клиента OpenAI для xAI
 client = OpenAI(
@@ -99,7 +168,7 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-# Функции для работы с Яндекс.Диском (перемещены выше для устранения NameError)
+# Функции для работы с Яндекс.Диском (остаются без изменений)
 def create_yandex_folder(folder_path: str) -> bool:
     """Создаёт папку на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
@@ -234,108 +303,117 @@ def delete_yandex_disk_file(file_path: str) -> bool:
         logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
         return False
 
-# Функции для работы с Yandex Disk для persistent storage
-BOT_DATA_FOLDER = "/bot_data/"
-
-def download_json_from_yandex(file_path: str, default_value: Any) -> Any:
-    """Скачивает JSON файл с Yandex Disk или возвращает default, если не существует."""
-    download_url = get_yandex_disk_file(file_path)
-    if download_url:
-        try:
-            response = requests.get(download_url)
-            if response.status_code == 200:
-                return json.loads(response.content.decode('utf-8'))
-            else:
-                logger.warning(f"Файл {file_path} не найден на Yandex, возвращаем default.")
-        except Exception as e:
-            logger.error(f"Ошибка при скачивании {file_path}: {str(e)}")
-    else:
-        logger.warning(f"Не удалось получить ссылку на {file_path}, возвращаем default.")
-    return default_value
-
-def upload_json_to_yandex(data: Any, file_path: str) -> bool:
-    """Загружает JSON файл на Yandex Disk."""
-    json_content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
-    file_name = os.path.basename(file_path)
-    folder_path = os.path.dirname(file_path)
-    return upload_to_yandex_disk(json_content, file_name, folder_path)
-
-# Функции для работы с администраторами (persistent на Yandex)
+# Функции для работы с администраторами (persistent в PostgreSQL)
 def load_allowed_admins() -> List[int]:
-    """Загружает список ID администраторов с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_admins.json"
-    default = [123456789]  # Замени на свой Telegram ID
-    admins = download_json_from_yandex(file_path, default)
-    if admins == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    """Загружает список ID администраторов из PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT admin_id FROM allowed_admins;")
+    admins = [row[0] for row in cur.fetchall()]
+    if not admins:
+        # Добавляем главного администратора по умолчанию
+        cur.execute("INSERT INTO allowed_admins (admin_id) VALUES (%s) ON CONFLICT DO NOTHING;", (6909708460,))
+        conn.commit()
+        admins = [6909708460]
+    cur.close()
+    conn.close()
     return admins
 
 def save_allowed_admins(allowed_admins: List[int]) -> None:
-    """Сохраняет список ID администраторов на Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_admins.json"
-    if upload_json_to_yandex(allowed_admins, file_path):
-        logger.info("Список администраторов сохранён на Yandex.")
-    else:
-        logger.error("Ошибка при сохранении allowed_admins.json на Yandex.")
+    """Сохраняет список ID администраторов в PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM allowed_admins;")
+    for admin_id in allowed_admins:
+        cur.execute("INSERT INTO allowed_admins (admin_id) VALUES (%s);", (admin_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info("Список администраторов сохранён в PostgreSQL.")
 
-# Функции для работы с пользователями (persistent на Yandex)
+# Функции для работы с пользователями (persistent в PostgreSQL)
 def load_allowed_users() -> List[int]:
-    """Загружает список ID разрешённых пользователей с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_users.json"
-    default = []
-    users = download_json_from_yandex(file_path, default)
-    if users == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    """Загружает список ID разрешённых пользователей из PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM allowed_users;")
+    users = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
     return users
 
 def save_allowed_users(allowed_users: List[int]) -> None:
-    """Сохраняет список ID разрешённых пользователей на Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}allowed_users.json"
-    if upload_json_to_yandex(allowed_users, file_path):
-        logger.info("Список пользователей сохранён на Yandex.")
-    else:
-        logger.error("Ошибка при сохранении allowed_users.json на Yandex.")
+    """Сохраняет список ID разрешённых пользователей в PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM allowed_users;")
+    for user_id in allowed_users:
+        cur.execute("INSERT INTO allowed_users (user_id) VALUES (%s);", (user_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info("Список пользователей сохранён в PostgreSQL.")
 
-# Функции для профилей пользователей (persistent на Yandex)
+# Функции для профилей пользователей (persistent в PostgreSQL)
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
-    """Загружает профили пользователей с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}user_profiles.json"
-    default = {}
-    profiles = download_json_from_yandex(file_path, default)
-    if profiles == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
+    """Загружает профили пользователей из PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, profile FROM user_profiles;")
+    profiles = {row[0]: row[1] for row in cur.fetchall()}
+    cur.close()
+    conn.close()
     return profiles
 
 def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
-    """Сохраняет профили пользователей на Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}user_profiles.json"
-    if upload_json_to_yandex(profiles, file_path):
-        logger.info(f"Профили успешно сохранены на Yandex: {profiles}")
-    else:
-        logger.error("Ошибка при сохранении user_profiles.json на Yandex.")
+    """Сохраняет профили пользователей в PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM user_profiles;")
+    for user_id, profile in profiles.items():
+        cur.execute("INSERT INTO user_profiles (user_id, profile) VALUES (%s, %s);", (user_id, PsJson(profile)))
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Профили успешно сохранены в PostgreSQL: {profiles}")
 
-# Функции для базы знаний (persistent на Yandex)
+# Функции для базы знаний (persistent в PostgreSQL)
 def load_knowledge_base() -> List[str]:
-    """Загружает базу знаний с Yandex Disk."""
-    file_path = f"{BOT_DATA_FOLDER}knowledge_base.json"
-    default = {"facts": []}
-    data = download_json_from_yandex(file_path, default)
-    if data == default:
-        upload_json_to_yandex(default, file_path)  # Создаем, если не существует
-    facts = data.get('facts', [])
-    logger.info(f"Загружено {len(facts)} фактов с Yandex.")
+    """Загружает базу знаний из PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT fact FROM knowledge_base;")
+    facts = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    logger.info(f"Загружено {len(facts)} фактов из PostgreSQL.")
     return facts
 
 def save_knowledge_base(facts: List[str]) -> None:
-    """Сохраняет базу знаний на Yandex Disk."""
-    data = {"facts": facts}
-    file_path = f"{BOT_DATA_FOLDER}knowledge_base.json"
-    if upload_json_to_yandex(data, file_path):
-        logger.info(f"База знаний сохранена на Yandex с {len(facts)} фактами.")
-    else:
-        logger.error("Ошибка при сохранении knowledge_base.json на Yandex.")
+    """Сохраняет базу знаний в PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM knowledge_base;")
+    for fact in facts:
+        cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s) ON CONFLICT DO NOTHING;", (fact,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"База знаний сохранена в PostgreSQL с {len(facts)} фактами.")
 
-# Инициализация глобальных переменных (загружаем с Yandex)
+# Функция для логирования запросов
+def log_request(user_id: int, message: str) -> None:
+    """Логирует запрос пользователя в PostgreSQL."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO request_logs (user_id, message) VALUES (%s, %s);", (user_id, message))
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Запрос от {user_id} залогирован: {message}")
+
+# Инициализация глобальных переменных (загружаем из PostgreSQL)
+init_db()  # Инициализируем таблицы при запуске
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
@@ -904,6 +982,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_input: str = update.message.text.strip()
     logger.info(f"Получено сообщение от {chat_id} (user_id: {user_id}): {user_input}")
 
+    # Логируем все текстовые сообщения
+    log_request(user_id, user_input)
+
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
         await update.message.reply_text("Извините, у вас нет доступа.", reply_markup=ReplyKeyboardRemove())
         logger.info(f"Пользователь {user_id} попытался отправить сообщение.")
@@ -1288,8 +1369,6 @@ def main() -> None:
         logger.error("Не удалось создать папку /regions/ (проверьте YANDEX_TOKEN). Бот запустится, но функции Диска не будут работать.")
     if not create_yandex_folder('/documents/'):
         logger.error("Не удалось создать папку /documents/ (проверьте YANDEX_TOKEN). Бот запустится, но функции Диска не будут работать.")
-    if not create_yandex_folder(BOT_DATA_FOLDER):
-        logger.error("Не удалось создать папку /bot_data/ для persistent данных (проверьте YANDEX_TOKEN).")
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
