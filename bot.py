@@ -13,6 +13,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import InputFile
 from urllib.parse import quote
 from openai import OpenAI
+import psycopg2
+from datetime import datetime
 
 # Настройка логирования
 logging.basicConfig(
@@ -30,11 +32,12 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Проверка токенов
-if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN]):
-    logger.error("Токены не найдены в .env файле!")
-    raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN в .env")
+if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
+    logger.error("Токены или DATABASE_URL не найдены в .env файле!")
+    raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL в .env")
 
 # Инициализация клиента OpenAI
 client = OpenAI(
@@ -87,97 +90,131 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
 # Функции для работы с администраторами
 def load_allowed_admins() -> List[int]:
-    """Загружает список ID администраторов из файла."""
+    """Загружает список ID администраторов из БД."""
     try:
-        if not os.path.exists('allowed_admins.json'):
-            logger.warning("Файл allowed_admins.json не найден, создаётся новый.")
-            with open('allowed_admins.json', 'w', encoding='utf-8') as f:
-                json.dump([123456789], f, ensure_ascii=False)  # Замени на свой Telegram ID
-        with open('allowed_admins.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM allowed_admins")
+        count = cur.fetchone()[0]
+        if count == 0:
+            cur.execute("INSERT INTO allowed_admins (user_id) VALUES (123456789)")  # Замени на свой Telegram ID
+            conn.commit()
+            logger.warning("Таблица allowed_admins пуста, добавлен default admin.")
+        cur.execute("SELECT user_id FROM allowed_admins")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [row[0] for row in rows]
     except Exception as e:
-        logger.error(f"Ошибка при загрузке allowed_admins.json: {str(e)}")
+        logger.error(f"Ошибка при загрузке allowed_admins: {str(e)}")
         return [123456789]  # Замени на свой Telegram ID
 
 def save_allowed_admins(allowed_admins: List[int]) -> None:
-    """Сохраняет список ID администраторов в файл."""
+    """Сохраняет список ID администраторов в БД."""
     try:
-        with open('allowed_admins.json', 'w', encoding='utf-8') as f:
-            json.dump(allowed_admins, f, ensure_ascii=False, indent=2)
-            logger.info("Список администраторов сохранён.")
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM allowed_admins")
+        for uid in allowed_admins:
+            cur.execute("INSERT INTO allowed_admins (user_id) VALUES (%s)", (uid,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("Список администраторов сохранён.")
     except Exception as e:
-        logger.error(f"Ошибка при сохранении allowed_admins.json: {str(e)}")
+        logger.error(f"Ошибка при сохранении allowed_admins: {str(e)}")
 
 # Функции для работы с пользователями
 def load_allowed_users() -> List[int]:
     """Загружает список ID разрешённых пользователей."""
     try:
-        if not os.path.exists('allowed_users.json'):
-            logger.warning("Файл allowed_users.json не найден, создаётся новый.")
-            with open('allowed_users.json', 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False)
-        with open('allowed_users.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM allowed_users")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [row[0] for row in rows]
     except Exception as e:
-        logger.error(f"Ошибка при загрузке allowed_users.json: {str(e)}")
+        logger.error(f"Ошибка при загрузке allowed_users: {str(e)}")
         return []
 
 def save_allowed_users(allowed_users: List[int]) -> None:
     """Сохраняет список ID разрешённых пользователей."""
     try:
-        with open('allowed_users.json', 'w', encoding='utf-8') as f:
-            json.dump(allowed_users, f, ensure_ascii=False, indent=2)
-            logger.info("Список пользователей сохранён.")
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM allowed_users")
+        for uid in allowed_users:
+            cur.execute("INSERT INTO allowed_users (user_id) VALUES (%s)", (uid,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("Список пользователей сохранён.")
     except Exception as e:
-        logger.error(f"Ошибка при сохранении allowed_users.json: {str(e)}")
+        logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
 
 # Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
-    """Загружает профили пользователей из файла."""
+    """Загружает профили пользователей из БД."""
     try:
-        if not os.path.exists('user_profiles.json'):
-            logger.warning("Файл user_profiles.json не найден, создаётся новый.")
-            with open('user_profiles.json', 'w', encoding='utf-8') as f:
-                json.dump({}, f, ensure_ascii=False)
-        with open('user_profiles.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        logger.error("Файл user_profiles.json повреждён, возвращается пустой словарь.")
-        return {}
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, fio, name, region FROM user_profiles")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        profiles = {}
+        for row in rows:
+            profiles[row[0]] = {
+                "fio": row[1],
+                "name": row[2],
+                "region": row[3]
+            }
+        return profiles
     except Exception as e:
-        logger.error(f"Ошибка при загрузке user_profiles.json: {str(e)}")
+        logger.error(f"Ошибка при загрузке user_profiles: {str(e)}")
         return {}
 
 def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
-    """Сохраняет профили пользователей в файл."""
+    """Сохраняет профили пользователей в БД."""
     try:
-        with open('user_profiles.json', 'w', encoding='utf-8') as f:
-            json.dump(profiles, f, ensure_ascii=False, indent=2)
-            logger.info(f"Профили успешно сохранены: {profiles}")
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM user_profiles")
+        for uid, data in profiles.items():
+            cur.execute(
+                "INSERT INTO user_profiles (user_id, fio, name, region) VALUES (%s, %s, %s, %s)",
+                (uid, data.get("fio"), data.get("name"), data.get("region"))
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Профили успешно сохранены: {profiles}")
     except Exception as e:
-        logger.error(f"Ошибка при сохранении user_profiles.json: {str(e)}")
+        logger.error(f"Ошибка при сохранении user_profiles: {str(e)}")
         raise
 
 # Функции для базы знаний
 def load_knowledge_base() -> List[str]:
-    """Загружает базу знаний из файла."""
+    """Загружает базу знаний из БД."""
     try:
-        if not os.path.exists('knowledge_base.json'):
-            logger.warning("Файл knowledge_base.json не найден, создаётся новый.")
-            with open('knowledge_base.json', 'w', encoding='utf-8') as f:
-                json.dump({"facts": []}, f, ensure_ascii=False)
-        with open('knowledge_base.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            facts = data.get('facts', [])
-            logger.info(f"Загружено {len(facts)} фактов из knowledge_base.json")
-            return facts
-    except json.JSONDecodeError:
-        logger.error("Ошибка чтения knowledge_base.json.")
-        return []
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT fact FROM knowledge_base")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        facts = [row[0] for row in rows]
+        logger.info(f"Загружено {len(facts)} фактов из knowledge_base")
+        return facts
     except Exception as e:
-        logger.error(f"Ошибка при загрузке knowledge_base.json: {str(e)}")
+        logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
         return []
 
 def add_knowledge(fact: str, facts: List[str]) -> List[str]:
@@ -198,14 +235,19 @@ def remove_knowledge(fact: str, facts: List[str]) -> List[str]:
     return facts
 
 def save_knowledge_base(facts: List[str]) -> None:
-    """Сохраняет базу знаний в файл."""
+    """Сохраняет базу знаний в БД."""
     try:
-        data = {"facts": facts}
-        with open('knowledge_base.json', 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info(f"База знаний сохранена с {len(facts)} фактами.")
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM knowledge_base")
+        for fact in facts:
+            cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"База знаний сохранена с {len(facts)} фактами.")
     except Exception as e:
-        logger.error(f"Ошибка при сохранении knowledge_base.json: {str(e)}")
+        logger.error(f"Ошибка при сохранении knowledge_base: {str(e)}")
 
 # Инициализация глобальных переменных
 ALLOWED_ADMINS = load_allowed_admins()
@@ -1252,6 +1294,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         final_response = f"{user_name}, {response_text}"
         histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
         await update.message.reply_text(final_response, reply_markup=default_reply_markup)
+
+        # Логирование запроса в request_logs
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO request_logs (user_id, query, response, timestamp) VALUES (%s, %s, %s, %s)",
+                (user_id, user_input, response_text, datetime.now())
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            logger.info(f"Запрос от {user_id} сохранён в request_logs.")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении запроса в request_logs: {str(e)}")
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
