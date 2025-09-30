@@ -48,11 +48,10 @@ except Exception as e:
 
 
 # Функция для инициализации таблиц (с опцией удаления старых)
-def init_db(conn, force_recreate=True):
+def init_db(conn, force_recreate=False):
     try:
         with conn.cursor() as cur:
             if force_recreate:
-                # Удаляем старые таблицы, если указано
                 cur.execute(
                     "DROP TABLE IF EXISTS request_logs, knowledge_base, user_profiles, allowed_users, allowed_admins;")
                 logger.info("Старые таблицы удалены.")
@@ -72,22 +71,19 @@ def init_db(conn, force_recreate=True):
             # Создание таблицы user_profiles
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
-                    user_id BIGINT NOT NULL PRIMARY KEY
+                    user_id BIGINT NOT NULL PRIMARY KEY,
+                    fio TEXT,
+                    name TEXT,
+                    region TEXT
                 );
             """)
-            # Добавляем столбцы, если их нет (ALTER ADD IF NOT EXISTS)
-            cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS fio TEXT;")
-            cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS name TEXT;")
-            cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS region TEXT;")
-
             # Создание таблицы knowledge_base
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_base (
-                    id SERIAL PRIMARY KEY
+                    id SERIAL PRIMARY KEY,
+                    fact TEXT NOT NULL
                 );
             """)
-            cur.execute("ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS fact TEXT NOT NULL;")
-
             # Создание таблицы request_logs
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS request_logs (
@@ -106,13 +102,12 @@ def init_db(conn, force_recreate=True):
             logger.info(f"Все таблицы успешно созданы или обновлены. Force recreate: {force_recreate}")
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
-        conn.rollback()  # Откат изменений при ошибке
+        conn.rollback()
         raise
 
 
 # Инициализируем таблицы при запуске
-# Здесь укажи force_recreate=True, если хочешь удалить старые таблицы и создать новые (потеряешь данные!)
-init_db(conn, force_recreate=False)  # Измени на True для первого запуска, если нужно очистить
+init_db(conn, force_recreate=False)  # Измени на True, если нужно очистить таблицы
 
 # Инициализация клиента OpenAI
 client = OpenAI(
@@ -166,15 +161,15 @@ FEDERAL_DISTRICTS = {
 }
 
 
-# Функции для работы с администраторами (с БД)
+# Функции для работы с администраторами
 def load_allowed_admins() -> List[int]:
     """Загружает список ID администраторов из БД."""
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM allowed_admins")
             admins = [row[0] for row in cur.fetchall()]
+            logger.info(f"Загружено {len(admins)} администраторов: {admins}")
             if not admins:
-                # Добавляем главного администратора по умолчанию
                 cur.execute("INSERT INTO allowed_admins (id) VALUES (%s) ON CONFLICT DO NOTHING", (6909708460,))
                 conn.commit()
                 admins = [6909708460]
@@ -182,7 +177,8 @@ def load_allowed_admins() -> List[int]:
             return admins
     except Exception as e:
         logger.error(f"Ошибка при загрузке allowed_admins: {str(e)}")
-        return [6909708460]  # По умолчанию главный админ
+        conn.rollback()
+        return [6909708460]
 
 
 def save_allowed_admins(allowed_admins: List[int]) -> None:
@@ -193,20 +189,24 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
             for admin_id in allowed_admins:
                 cur.execute("INSERT INTO allowed_admins (id) VALUES (%s)", (admin_id,))
             conn.commit()
-            logger.info("Список администраторов сохранён.")
+            logger.info(f"Сохранено {len(allowed_admins)} администраторов: {allowed_admins}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_admins: {str(e)}")
+        conn.rollback()
 
 
-# Функции для работы с пользователями (с БД)
+# Функции для работы с пользователями
 def load_allowed_users() -> List[int]:
     """Загружает список ID разрешённых пользователей из БД."""
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM allowed_users")
-            return [row[0] for row in cur.fetchall()]
+            users = [row[0] for row in cur.fetchall()]
+            logger.info(f"Загружено {len(users)} пользователей: {users}")
+            return users
     except Exception as e:
         logger.error(f"Ошибка при загрузке allowed_users: {str(e)}")
+        conn.rollback()
         return []
 
 
@@ -218,12 +218,13 @@ def save_allowed_users(allowed_users: List[int]) -> None:
             for user_id in allowed_users:
                 cur.execute("INSERT INTO allowed_users (id) VALUES (%s)", (user_id,))
             conn.commit()
-            logger.info("Список пользователей сохранён.")
+            logger.info(f"Сохранено {len(allowed_users)} пользователей: {allowed_users}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
+        conn.rollback()
 
 
-# Функции для профилей пользователей (с БД)
+# Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
     """Загружает профили пользователей из БД."""
     try:
@@ -232,9 +233,11 @@ def load_user_profiles() -> Dict[int, Dict[str, str]]:
             profiles = {}
             for row in cur.fetchall():
                 profiles[row[0]] = {"fio": row[1], "name": row[2], "region": row[3]}
+            logger.info(f"Загружено {len(profiles)} профилей пользователей")
             return profiles
     except Exception as e:
         logger.error(f"Ошибка при загрузке user_profiles: {str(e)}")
+        conn.rollback()
         return {}
 
 
@@ -249,40 +252,56 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
                     (user_id, profile.get("fio"), profile.get("name"), profile.get("region"))
                 )
             conn.commit()
-            logger.info(f"Профили успешно сохранены: {len(profiles)}")
+            logger.info(f"Сохранено {len(profiles)} профилей пользователей")
     except Exception as e:
         logger.error(f"Ошибка при сохранении user_profiles: {str(e)}")
+        conn.rollback()
         raise
 
 
-# Функции для базы знаний (с БД)
+# Функции для базы знаний
 def load_knowledge_base() -> List[str]:
     """Загружает базу знаний из БД."""
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT fact FROM knowledge_base")
             facts = [row[0] for row in cur.fetchall()]
-            logger.info(f"Загружено {len(facts)} фактов из knowledge_base")
+            logger.info(f"Загружено {len(facts)} фактов из knowledge_base: {facts}")
             return facts
     except Exception as e:
         logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
+        conn.rollback()
         return []
 
 
 def add_knowledge(fact: str, facts: List[str]) -> List[str]:
-    """Добавляет новый факт в список знаний."""
+    """Добавляет новый факт в список знаний и сохраняет в БД."""
     if fact.strip() and fact not in facts:
         facts.append(fact.strip())
-        logger.info(f"Добавлен факт: {fact}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact.strip(),))
+                conn.commit()
+                logger.info(f"Добавлен факт в БД: {fact}")
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении факта в knowledge_base: {str(e)}")
+            conn.rollback()
     return facts
 
 
 def remove_knowledge(fact: str, facts: List[str]) -> List[str]:
-    """Удаляет факт из списка знаний."""
+    """Удаляет факт из списка знаний и БД."""
     fact = fact.strip()
     if fact in facts:
         facts.remove(fact)
-        logger.info(f"Факт удалён: {fact}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM knowledge_base WHERE fact = %s", (fact,))
+                conn.commit()
+                logger.info(f"Факт удалён из БД: {fact}")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении факта из knowledge_base: {str(e)}")
+            conn.rollback()
     else:
         logger.warning(f"Факт не найден в базе знаний: {fact}")
     return facts
@@ -296,12 +315,13 @@ def save_knowledge_base(facts: List[str]) -> None:
             for fact in facts:
                 cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact,))
             conn.commit()
-            logger.info(f"База знаний сохранена с {len(facts)} фактами.")
+            logger.info(f"База знаний сохранена с {len(facts)} фактами")
     except Exception as e:
         logger.error(f"Ошибка при сохранении knowledge_base: {str(e)}")
+        conn.rollback()
 
 
-# Функция для логирования запросов в БД
+# Функция для логирования запросов
 def log_request(user_id: int, request: str, response: str) -> None:
     """Логирует запрос и ответ в request_logs."""
     try:
@@ -311,9 +331,50 @@ def log_request(user_id: int, request: str, response: str) -> None:
                 (user_id, request, response)
             )
             conn.commit()
-            logger.info(f"Запрос от {user_id} залогирован.")
+            logger.info(f"Запрос от {user_id} залогирован: {request}")
     except Exception as e:
         logger.error(f"Ошибка при логировании запроса: {str(e)}")
+        conn.rollback()
+
+
+# Функция для проверки содержимого таблиц (для отладки)
+def debug_tables() -> str:
+    """Возвращает содержимое всех таблиц для отладки."""
+    result = []
+    try:
+        with conn.cursor() as cur:
+            # allowed_admins
+            cur.execute("SELECT id FROM allowed_admins")
+            admins = [row[0] for row in cur.fetchall()]
+            result.append(f"allowed_admins ({len(admins)} записей): {admins}")
+
+            # allowed_users
+            cur.execute("SELECT id FROM allowed_users")
+            users = [row[0] for row in cur.fetchall()]
+            result.append(f"allowed_users ({len(users)} записей): {users}")
+
+            # user_profiles
+            cur.execute("SELECT user_id, fio, name, region FROM user_profiles")
+            profiles = [f"ID: {row[0]}, ФИО: {row[1]}, Имя: {row[2]}, Регион: {row[3]}" for row in cur.fetchall()]
+            result.append(f"user_profiles ({len(profiles)} записей): {profiles}")
+
+            # knowledge_base
+            cur.execute("SELECT fact FROM knowledge_base")
+            facts = [row[0] for row in cur.fetchall()]
+            result.append(f"knowledge_base ({len(facts)} записей): {facts}")
+
+            # request_logs
+            cur.execute("SELECT id, user_id, request, response, timestamp FROM request_logs")
+            logs = [f"ID: {row[0]}, User: {row[1]}, Запрос: {row[2]}, Ответ: {row[3]}, Время: {row[4]}" for row in
+                    cur.fetchall()]
+            result.append(f"request_logs ({len(logs)} записей): {logs}")
+
+        conn.commit()
+        return "\n\n".join(result)
+    except Exception as e:
+        logger.error(f"Ошибка при получении содержимого таблиц: {str(e)}")
+        conn.rollback()
+        return f"Ошибка: {str(e)}"
 
 
 # Инициализация глобальных переменных
@@ -397,7 +458,7 @@ def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
 def get_yandex_disk_file(file_path: str) -> str | None:
     """Получает ссылку для скачивания файла с Яндекс.Диска."""
     file_path = file_path.rstrip('/')
-    encoded_path = quote(file_path, safe='/')  # Улучшенное экранирование пути
+    encoded_path = quote(file_path, safe='/')
     url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={encoded_path}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
@@ -504,7 +565,6 @@ async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     fact = ' '.join(context.args)
     global KNOWLEDGE_BASE
     KNOWLEDGE_BASE = add_knowledge(fact, KNOWLEDGE_BASE)
-    save_knowledge_base(KNOWLEDGE_BASE)
     await update.message.reply_text(f"Факт добавлен: '{fact}'. Теперь бот использует его во всех ответах!")
     logger.info(f"Администратор {user_id} добавил факт: {fact}")
 
@@ -526,12 +586,25 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     global KNOWLEDGE_BASE
     if fact in KNOWLEDGE_BASE:
         KNOWLEDGE_BASE = remove_knowledge(fact, KNOWLEDGE_BASE)
-        save_knowledge_base(KNOWLEDGE_BASE)
         await update.message.reply_text(f"Факт удалён: '{fact}'.")
         logger.info(f"Администратор {user_id} удалил факт: {fact}")
     else:
         await update.message.reply_text(f"Факт '{fact}' не найден в базе знаний.")
         logger.info(f"Администратор {user_id} пытался удалить несуществующий факт: {fact}")
+
+
+# Обработчик команды /debug_tables
+async def handle_debug_tables(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отображает содержимое всех таблиц для отладки."""
+    user_id: int = update.effective_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Только администраторы могут просматривать содержимое таблиц.")
+        logger.info(f"Пользователь {user_id} попытался использовать /debug_tables.")
+        return
+
+    debug_info = debug_tables()
+    await update.message.reply_text(f"Содержимое таблиц:\n{debug_info}")
+    logger.info(f"Администратор {user_id} запросил содержимое таблиц.")
 
 
 # Обработчик команды /start
@@ -751,7 +824,6 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
         logger.info(f"Папка {region_folder} пуста для пользователя {user_id}.")
         return
 
-    # Сохраняем список файлов в context.user_data
     context.user_data['file_list'] = files
     keyboard = []
     for idx, item in enumerate(files):
@@ -970,7 +1042,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                                                reply_markup=default_reply_markup)
                 logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
-            # Обновляем список файлов после удаления
             context.user_data.pop('file_list', None)
             await show_file_list(update, context, for_deletion=True)
 
@@ -1021,6 +1092,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             USER_PROFILES[user_id] = {"fio": user_input, "name": None, "region": None}
             try:
                 save_user_profiles(USER_PROFILES)
+                # Автоматически добавляем пользователя в allowed_users
+                if user_id not in ALLOWED_USERS:
+                    ALLOWED_USERS.append(user_id)
+                    save_allowed_users(ALLOWED_USERS)
             except Exception as e:
                 await update.message.reply_text("Ошибка при сохранении профиля. Попробуйте снова.")
                 logger.error(f"Ошибка при сохранении профиля для user_id {user_id}: {str(e)}")
@@ -1190,37 +1265,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_main_menu(update, context)
         handled = True
 
-    # Обработка навигации по documents
-    if context.user_data.get('current_mode') == 'documents_nav':
-        current_path = context.user_data.get('current_path', '/documents/')
-        logger.info(f"Пользователь {user_id} пытается перейти в папку: {user_input}, текущий путь: {current_path}")
-        dirs = list_yandex_disk_directories(current_path)
-        if user_input in dirs:
-            context.user_data.pop('file_list', None)
-            context.user_data['current_path'] = f"{current_path.rstrip('/')}/{user_input}/"
-            logger.info(f"Пользователь {user_id} перешёл в папку: {context.user_data['current_path']}")
-            if not create_yandex_folder(context.user_data['current_path']):
-                await update.message.reply_text(
-                    f"Ошибка: не удалось создать папку {context.user_data['current_path']}.",
-                    reply_markup=default_reply_markup)
-                logger.error(
-                    f"Не удалось создать папку {context.user_data['current_path']} для пользователя {user_id}.")
-                return
-            await show_current_docs(update, context)
-            handled = True
-        elif user_input == 'В главное меню':
-            logger.info(f"Пользователь {user_id} вернулся в главное меню из {current_path}")
-            await show_main_menu(update, context)
-            handled = True
-        elif user_input == 'Назад' and current_path != '/documents/':
-            context.user_data.pop('file_list', None)
-            parts = current_path.rstrip('/').split('/')
-            new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
-            context.user_data['current_path'] = new_path
-            logger.info(f"Пользователь {user_id} вернулся назад в {new_path}")
-            await show_current_docs(update, context, is_return=True)
-            handled = True
-
     if context.user_data.get('awaiting_user_id'):
         try:
             new_id = int(user_input)
@@ -1305,18 +1349,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Если сообщение не было обработано как специальная команда или состояние, обрабатываем как запрос к AI
     if not handled:
-        # Обработка текстового сообщения через API
         if chat_id not in histories:
             histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-        # Добавляем базу знаний в контекст для всех пользователей
         global KNOWLEDGE_BASE
         if KNOWLEDGE_BASE:
             knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
             histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
             logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
 
-        # Проверка необходимости веб-поиска
         need_search = any(word in user_input.lower() for word in [
             "актуальная информация", "последние новости", "найди в интернете", "поиск",
             "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о",
@@ -1346,7 +1387,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         messages = histories[chat_id]["messages"]
 
-        # Запрос к API
         models_to_try = ["grok-3-mini", "grok-beta"]
         response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
 
@@ -1405,7 +1445,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     """Запуск бота."""
     logger.info("Запуск Telegram бота...")
-    # Создание корневых папок
     if not create_yandex_folder('/regions/'):
         logger.error("Не удалось создать папку /regions/")
     if not create_yandex_folder('/documents/'):
@@ -1413,19 +1452,4 @@ def main() -> None:
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
-        app.add_handler(CommandHandler("getfile", get_file))
-        app.add_handler(CommandHandler("learn", handle_learn))
-        app.add_handler(CommandHandler("forget", handle_forget))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(CallbackQueryHandler(handle_callback_query))
-        app.add_error_handler(error_handler)
-        app.run_polling()
-    except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {str(e)}")
-    finally:
-        conn.close()  # Закрываем соединение с БД при завершении
-
-
-if __name__ == "__main__":
-    main()
+        app.add_handler(CommandHandler("
