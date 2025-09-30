@@ -305,7 +305,7 @@ def load_knowledge_base_db() -> List[str]:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT fact FROM knowledge_base")
-            facts = [row[0] for row in cur.fetchall()]
+            facts = [row[0].strip() for row in cur.fetchall()]
             logger.info(f"Загружено {len(facts)} фактов из knowledge_base: {facts}")
             return facts
     except Exception as e:
@@ -314,13 +314,15 @@ def load_knowledge_base_db() -> List[str]:
         return []
 
 def add_knowledge_db(fact: str, facts: List[str]) -> List[str]:
-    if fact.strip() and fact not in facts:
-        facts.append(fact.strip())
+    fact = fact.strip()
+    if fact and fact not in facts:
         try:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact.strip(),))
+                cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact,))
                 conn.commit()
                 logger.info(f"Добавлен факт в БД: {fact}")
+            # Перезагружаем факты из базы для обновления KNOWLEDGE_BASE_DB
+            facts = load_knowledge_base_db()
         except Exception as e:
             logger.error(f"Ошибка при добавлении факта: {str(e)}")
             conn.rollback()
@@ -773,15 +775,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Обработка запросов к базе знаний и ИИ
     if not handled:
         # Проверка в базе знаний PostgreSQL
-        user_input_lower = user_input.lower()
+        user_input_lower = user_input.lower().strip()
+        logger.info(f"Поиск в knowledge_base для запроса '{user_input_lower}'; доступные факты: {KNOWLEDGE_BASE_DB}")
         for fact in KNOWLEDGE_BASE_DB:
-            if user_input_lower in fact.lower():
+            fact_lower = fact.lower().strip()
+            # Проверяем, начинается ли факт с запроса или содержит запрос
+            if fact_lower.startswith(user_input_lower) or user_input_lower in fact_lower:
                 await update.message.reply_text(fact, reply_markup=default_reply_markup)
                 log_request(user_id, user_input, fact)
                 logger.info(f"Ответ найден в knowledge_base для запроса '{user_input}': {fact}")
                 return
+            else:
+                logger.debug(f"Факт '{fact}' не соответствует запросу '{user_input_lower}'")
 
         # Запрос к Grok API с попыткой нескольких моделей
+        logger.info(f"Факт для '{user_input}' не найден в knowledge_base, обращение к Grok API")
         if chat_id not in histories:
             histories[chat_id] = {"name": USER_PROFILES[user_id]["name"], "messages": [{"role": "system", "content": system_prompt}]}
         histories[chat_id]["messages"].append({"role": "user", "content": user_input})
