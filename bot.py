@@ -13,8 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import InputFile
 from urllib.parse import quote
 from openai import OpenAI
-import psycopg2
-from datetime import datetime
+import psycopg2  # Добавлен импорт для работы с Postgres
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,12 +31,30 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DB_HOST = os.getenv("DB_HOST")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_NAME = os.getenv("DB_NAME")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
 # Проверка токенов
-if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
-    logger.error("Токены или DATABASE_URL не найдены в .env файле!")
-    raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL в .env")
+if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN]):
+    logger.error("Токены не найдены в .env файле!")
+    raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN в .env")
+
+# Подключение к Postgres
+try:
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        dbname=DB_NAME,
+        port=DB_PORT
+    )
+    logger.info("Подключение к Postgres успешно.")
+except Exception as e:
+    logger.error(f"Ошибка подключения к Postgres: {str(e)}")
+    raise ValueError("Не удалось подключиться к базе данных.")
 
 # Инициализация клиента OpenAI
 client = OpenAI(
@@ -90,132 +107,109 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
 
-# Функции для работы с администраторами
+# Функции для работы с администраторами (теперь с БД)
 def load_allowed_admins() -> List[int]:
     """Загружает список ID администраторов из БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM allowed_admins")
-        count = cur.fetchone()[0]
-        if count == 0:
-            cur.execute("INSERT INTO allowed_admins (user_id) VALUES (123456789)")  # Замени на свой Telegram ID
-            conn.commit()
-            logger.warning("Таблица allowed_admins пуста, добавлен default admin.")
-        cur.execute("SELECT user_id FROM allowed_admins")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [row[0] for row in rows]
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM allowed_admins")
+            admins = [row[0] for row in cur.fetchall()]
+            if not admins:
+                # Добавляем главного администратора по умолчанию
+                cur.execute("INSERT INTO allowed_admins (id) VALUES (%s) ON CONFLICT DO NOTHING", (6909708460,))
+                conn.commit()
+                admins = [6909708460]
+                logger.info("Добавлен главный администратор по умолчанию: 6909708460")
+            return admins
     except Exception as e:
         logger.error(f"Ошибка при загрузке allowed_admins: {str(e)}")
-        return [123456789]  # Замени на свой Telegram ID
+        return [6909708460]  # По умолчанию главный админ
+
 
 def save_allowed_admins(allowed_admins: List[int]) -> None:
     """Сохраняет список ID администраторов в БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM allowed_admins")
-        for uid in allowed_admins:
-            cur.execute("INSERT INTO allowed_admins (user_id) VALUES (%s)", (uid,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info("Список администраторов сохранён.")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM allowed_admins")
+            for admin_id in allowed_admins:
+                cur.execute("INSERT INTO allowed_admins (id) VALUES (%s)", (admin_id,))
+            conn.commit()
+            logger.info("Список администраторов сохранён.")
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_admins: {str(e)}")
 
-# Функции для работы с пользователями
+
+# Функции для работы с пользователями (теперь с БД)
 def load_allowed_users() -> List[int]:
-    """Загружает список ID разрешённых пользователей."""
+    """Загружает список ID разрешённых пользователей из БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM allowed_users")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [row[0] for row in rows]
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM allowed_users")
+            return [row[0] for row in cur.fetchall()]
     except Exception as e:
         logger.error(f"Ошибка при загрузке allowed_users: {str(e)}")
         return []
 
+
 def save_allowed_users(allowed_users: List[int]) -> None:
-    """Сохраняет список ID разрешённых пользователей."""
+    """Сохраняет список ID разрешённых пользователей в БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM allowed_users")
-        for uid in allowed_users:
-            cur.execute("INSERT INTO allowed_users (user_id) VALUES (%s)", (uid,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info("Список пользователей сохранён.")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM allowed_users")
+            for user_id in allowed_users:
+                cur.execute("INSERT INTO allowed_users (id) VALUES (%s)", (user_id,))
+            conn.commit()
+            logger.info("Список пользователей сохранён.")
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
 
-# Функции для профилей пользователей
+
+# Функции для профилей пользователей (теперь с БД)
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
     """Загружает профили пользователей из БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, fio, name, region FROM user_profiles")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        profiles = {}
-        for row in rows:
-            profiles[row[0]] = {
-                "fio": row[1],
-                "name": row[2],
-                "region": row[3]
-            }
-        return profiles
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, fio, name, region FROM user_profiles")
+            profiles = {}
+            for row in cur.fetchall():
+                profiles[row[0]] = {"fio": row[1], "name": row[2], "region": row[3]}
+            return profiles
     except Exception as e:
         logger.error(f"Ошибка при загрузке user_profiles: {str(e)}")
         return {}
 
+
 def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     """Сохраняет профили пользователей в БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM user_profiles")
-        for uid, data in profiles.items():
-            cur.execute(
-                "INSERT INTO user_profiles (user_id, fio, name, region) VALUES (%s, %s, %s, %s)",
-                (uid, data.get("fio"), data.get("name"), data.get("region"))
-            )
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info(f"Профили успешно сохранены: {profiles}")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_profiles")
+            for user_id, profile in profiles.items():
+                cur.execute(
+                    "INSERT INTO user_profiles (user_id, fio, name, region) VALUES (%s, %s, %s, %s)",
+                    (user_id, profile.get("fio"), profile.get("name"), profile.get("region"))
+                )
+            conn.commit()
+            logger.info(f"Профили успешно сохранены: {len(profiles)}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении user_profiles: {str(e)}")
         raise
 
-# Функции для базы знаний
+
+# Функции для базы знаний (теперь с БД)
 def load_knowledge_base() -> List[str]:
     """Загружает базу знаний из БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT fact FROM knowledge_base")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        facts = [row[0] for row in rows]
-        logger.info(f"Загружено {len(facts)} фактов из knowledge_base")
-        return facts
+        with conn.cursor() as cur:
+            cur.execute("SELECT fact FROM knowledge_base")
+            facts = [row[0] for row in cur.fetchall()]
+            logger.info(f"Загружено {len(facts)} фактов из knowledge_base")
+            return facts
     except Exception as e:
         logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
         return []
+
 
 def add_knowledge(fact: str, facts: List[str]) -> List[str]:
     """Добавляет новый факт в список знаний."""
@@ -223,6 +217,7 @@ def add_knowledge(fact: str, facts: List[str]) -> List[str]:
         facts.append(fact.strip())
         logger.info(f"Добавлен факт: {fact}")
     return facts
+
 
 def remove_knowledge(fact: str, facts: List[str]) -> List[str]:
     """Удаляет факт из списка знаний."""
@@ -234,20 +229,34 @@ def remove_knowledge(fact: str, facts: List[str]) -> List[str]:
         logger.warning(f"Факт не найден в базе знаний: {fact}")
     return facts
 
+
 def save_knowledge_base(facts: List[str]) -> None:
     """Сохраняет базу знаний в БД."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM knowledge_base")
-        for fact in facts:
-            cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info(f"База знаний сохранена с {len(facts)} фактами.")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM knowledge_base")
+            for fact in facts:
+                cur.execute("INSERT INTO knowledge_base (fact) VALUES (%s)", (fact,))
+            conn.commit()
+            logger.info(f"База знаний сохранена с {len(facts)} фактами.")
     except Exception as e:
         logger.error(f"Ошибка при сохранении knowledge_base: {str(e)}")
+
+
+# Функция для логирования запросов в БД
+def log_request(user_id: int, request: str, response: str) -> None:
+    """Логирует запрос и ответ в request_logs."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO request_logs (user_id, request, response, timestamp) VALUES (%s, %s, %s, NOW())",
+                (user_id, request, response)
+            )
+            conn.commit()
+            logger.info(f"Запрос от {user_id} залогирован.")
+    except Exception as e:
+        logger.error(f"Ошибка при логировании запроса: {str(e)}")
+
 
 # Инициализация глобальных переменных
 ALLOWED_ADMINS = load_allowed_admins()
@@ -269,7 +278,8 @@ system_prompt = """
 # Хранение истории переписки
 histories: Dict[int, Dict[str, Any]] = {}
 
-# Функции для работы с Яндекс.Диском
+
+# Функции для работы с Яндекс.Диском (остаются без изменений)
 def create_yandex_folder(folder_path: str) -> bool:
     """Создаёт папку на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
@@ -290,6 +300,7 @@ def create_yandex_folder(folder_path: str) -> bool:
         logger.error(f"Ошибка при создании папки {folder_path}: {str(e)}")
         return False
 
+
 def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict[str, str]]:
     """Возвращает список элементов (файлов или директорий) в папке на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
@@ -308,10 +319,12 @@ def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict
         logger.error(f"Ошибка при запросе списка элементов в {folder_path}: {str(e)}")
         return []
 
+
 def list_yandex_disk_directories(folder_path: str) -> List[str]:
     """Возвращает список имен поддиректорий в папке."""
     items = list_yandex_disk_items(folder_path, item_type='dir')
     return [item['name'] for item in items]
+
 
 def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     """Возвращает список файлов в папке на Яндекс.Диске (с фильтром по расширениям)."""
@@ -321,6 +334,7 @@ def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     files = [item for item in items if item['name'].lower().endswith(supported_extensions)]
     logger.info(f"Найдено {len(files)} файлов в папке {folder_path}: {[item['name'] for item in files]}")
     return files
+
 
 def get_yandex_disk_file(file_path: str) -> str | None:
     """Получает ссылку для скачивания файла с Яндекс.Диска."""
@@ -337,6 +351,7 @@ def get_yandex_disk_file(file_path: str) -> str | None:
     except Exception as e:
         logger.error(f"Ошибка при запросе к Яндекс.Диску для файла {file_path}: {str(e)}")
         return None
+
 
 def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str) -> bool:
     """Загружает файл на Яндекс.Диск."""
@@ -366,6 +381,7 @@ def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str)
         logger.error(f"Ошибка при загрузке файла {file_path}: {str(e)}")
         return False
 
+
 def delete_yandex_disk_file(file_path: str) -> bool:
     """Удаляет файл с Яндекс.Диска."""
     file_path = file_path.rstrip('/')
@@ -382,6 +398,7 @@ def delete_yandex_disk_file(file_path: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
         return False
+
 
 # Функция веб-поиска
 def web_search(query: str) -> str:
@@ -413,6 +430,7 @@ def web_search(query: str) -> str:
         logger.error(f"Ошибка при поиске: {str(e)}")
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
 
+
 # Обработчик команды /learn
 async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка команды /learn для добавления знаний."""
@@ -431,6 +449,7 @@ async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     save_knowledge_base(KNOWLEDGE_BASE)
     await update.message.reply_text(f"Факт добавлен: '{fact}'. Теперь бот использует его во всех ответах!")
     logger.info(f"Администратор {user_id} добавил факт: {fact}")
+
 
 # Обработчик команды /forget
 async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -455,6 +474,7 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         await update.message.reply_text(f"Факт '{fact}' не найден в базе знаний.")
         logger.info(f"Администратор {user_id} пытался удалить несуществующий факт: {fact}")
+
 
 # Обработчик команды /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -493,6 +513,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     else:
         await show_main_menu(update, context)
 
+
 # Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает главное меню с командами."""
@@ -511,6 +532,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop('file_list', None)
     context.user_data.pop('current_path', None)
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+
 
 # Обработчик команды /getfile
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -539,6 +561,7 @@ async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
 
+
 # Поиск и отправка файла из региона
 async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
     """Ищет и отправляет файл с Яндекс.Диска из региональной папки."""
@@ -555,8 +578,10 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
-    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
-        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
+    if not file_name.lower().endswith(
+            ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+        await update.message.reply_text(
+            "Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
         logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
         return
 
@@ -595,6 +620,7 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
         logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
+
 # Обработка загруженных документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка загруженных документов."""
@@ -605,8 +631,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     document = update.message.document
     file_name = document.file_name
-    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
-        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
+    if not file_name.lower().endswith(
+            ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+        await update.message.reply_text(
+            "Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
         return
 
     file_size = document.file_size / (1024 * 1024)
@@ -637,6 +665,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     context.user_data.pop('awaiting_upload', None)
     logger.info(f"Пользователь {user_id} загрузил файл {file_name} в {region_folder}.")
+
 
 # Отображение списка файлов (для регионов)
 async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
@@ -675,6 +704,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     action_text = "Выберите файл для удаления:" if for_deletion else "Список всех файлов:"
     await update.message.reply_text(action_text, reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}: {[item['name'] for item in files]}")
+
 
 # Отображение содержимого текущей папки в /documents/
 async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, is_return: bool = False) -> None:
@@ -719,6 +749,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     else:
         await update.message.reply_text(f"Папка {folder_name} пуста.", reply_markup=reply_markup)
         logger.info(f"Папка {current_path} пуста для пользователя {user_id}.")
+
 
 # Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -827,9 +858,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         file_path = f"{region_folder.rstrip('/')}/{file_name}"
 
         if action == "download":
-            if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
-                await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.",
-                                               reply_markup=default_reply_markup)
+            if not file_name.lower().endswith(
+                    ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+                await query.message.reply_text(
+                    "Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.",
+                    reply_markup=default_reply_markup)
                 logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
                 return
 
@@ -883,6 +916,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data.pop('file_list', None)
             await show_file_list(update, context, for_deletion=True)
 
+
 # Вспомогательная функция для отображения главного меню через callback_query
 async def show_main_menu_with_query(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает главное меню через callback_query."""
@@ -901,6 +935,7 @@ async def show_main_menu_with_query(query: Update.callback_query, context: Conte
     context.user_data.pop('file_list', None)
     context.user_data.pop('current_path', None)
     await query.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+
 
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1240,7 +1275,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
                 else:
                     extracted_text = search_results_json
-                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты: {extracted_text}"})
+                histories[chat_id]["messages"].append(
+                    {"role": "system", "content": f"Актуальные факты: {extracted_text}"})
                 logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
             except json.JSONDecodeError:
                 histories[chat_id]["messages"].append(
@@ -1295,20 +1331,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
         await update.message.reply_text(final_response, reply_markup=default_reply_markup)
 
-        # Логирование запроса в request_logs
-        try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO request_logs (user_id, query, response, timestamp) VALUES (%s, %s, %s, %s)",
-                (user_id, user_input, response_text, datetime.now())
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            logger.info(f"Запрос от {user_id} сохранён в request_logs.")
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении запроса в request_logs: {str(e)}")
+        # Логируем запрос и ответ в БД
+        log_request(user_id, user_input, response_text)
+
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1316,6 +1341,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         await update.message.reply_text("Произошла ошибка, попробуйте позже.")
+
 
 # Главная функция
 def main() -> None:
@@ -1339,6 +1365,9 @@ def main() -> None:
         app.run_polling()
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
+    finally:
+        conn.close()  # Закрываем соединение с БД при завершении
+
 
 if __name__ == "__main__":
     main()
