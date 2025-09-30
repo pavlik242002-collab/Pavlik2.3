@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import os
-import json
 import logging
-import openai
 import requests
 from typing import Dict, List, Any
 from dotenv import load_dotenv
-from duckduckgo_search import DDGS
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
@@ -32,7 +29,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 XAI_TOKEN = os.getenv("XAI_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")  # Модель по умолчанию, переопределяется в .env
+XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")  # Модель по умолчанию
 
 # Проверка токенов и DATABASE_URL
 if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
@@ -52,36 +49,6 @@ client = OpenAI(
     base_url="https://api.x.ai/v1",
     api_key=XAI_TOKEN,
 )
-
-# Функция для загрузки knowledge_base.json
-def load_knowledge_base_json() -> Dict[str, str]:
-    """Загружает базу знаний из файла knowledge_base.json."""
-    file_path = 'knowledge_base.json'
-    try:
-        # Проверяем наличие файла
-        if not os.path.exists(file_path):
-            logger.warning(f"Файл {file_path} не найден, создаётся пустой.")
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump({}, f, ensure_ascii=False)
-            return {}
-        # Проверяем, является ли файл пустым или некорректным
-        with open(file_path, 'r', encoding='utf-8') as f:
-            file_content = f.read().strip()
-            if not file_content:
-                logger.warning(f"Файл {file_path} пуст, возвращается пустой словарь.")
-                return {}
-            knowledge = json.loads(file_content)
-            if not isinstance(knowledge, dict):
-                logger.error(f"Файл {file_path} содержит некорректные данные, ожидается словарь.")
-                return {}
-            logger.info(f"Загружено {len(knowledge)} записей из {file_path}: {list(knowledge.keys())}")
-            return knowledge
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка декодирования JSON в {file_path}: {str(e)}")
-        return {}
-    except Exception as e:
-        logger.error(f"Ошибка при загрузке {file_path}: {str(e)}")
-        return {}
 
 # Инициализация таблиц в PostgreSQL
 def init_db(conn):
@@ -143,7 +110,7 @@ def init_db(conn):
             else:
                 logger.info("Таблица user_profiles уже существует.")
 
-            # Проверка и создание таблицы knowledge_base
+            # Проверка и создание таблицы knowledge_base с начальными фактами
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -156,8 +123,12 @@ def init_db(conn):
                         id SERIAL PRIMARY KEY,
                         fact TEXT NOT NULL
                     );
+                    INSERT INTO knowledge_base (fact) VALUES
+                        ('Привет! Чем могу помочь?'),
+                        ('Документы по награждениям находятся в папке /documents/Награждения.'),
+                        ('Всё отлично, спасибо за вопрос!');
                 """)
-                logger.info("Таблица knowledge_base создана.")
+                logger.info("Таблица knowledge_base создана с начальными фактами.")
             else:
                 logger.info("Таблица knowledge_base уже существует.")
 
@@ -180,7 +151,6 @@ def init_db(conn):
                 """)
                 logger.info("Таблица request_logs создана.")
             else:
-                # Проверка наличия столбца request_text
                 cur.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.columns 
@@ -336,7 +306,7 @@ def load_knowledge_base_db() -> List[str]:
         with conn.cursor() as cur:
             cur.execute("SELECT fact FROM knowledge_base")
             facts = [row[0] for row in cur.fetchall()]
-            logger.info(f"Загружено {len(facts)} фактов из knowledge_base")
+            logger.info(f"Загружено {len(facts)} фактов из knowledge_base: {facts}")
             return facts
     except Exception as e:
         logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
@@ -459,13 +429,12 @@ def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str)
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
-KNOWLEDGE_BASE_JSON = load_knowledge_base_json()
 KNOWLEDGE_BASE_DB = load_knowledge_base_db()
 
 # Системный промпт для ИИ
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует историю переписки. 
-Сначала проверяй базу знаний из knowledge_base.json и PostgreSQL. Если ответа нет, используй свои знания.
+Сначала проверяй базу знаний из PostgreSQL (таблица knowledge_base). Если ответа нет, используй свои знания.
 Отвечай кратко, на русском языке, без лишних объяснений.
 """
 
@@ -488,6 +457,22 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Как я могу к Вам обращаться?", reply_markup=ReplyKeyboardRemove())
     else:
         await show_main_menu(update, context)
+
+# Команда /add_fact для добавления фактов
+async def add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id: int = update.effective_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Только администраторы могут добавлять факты.", reply_markup=ReplyKeyboardRemove())
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: /add_fact <факт>", reply_markup=ReplyKeyboardRemove())
+        return
+    fact = ' '.join(args).strip()
+    global KNOWLEDGE_BASE_DB
+    KNOWLEDGE_BASE_DB = add_knowledge_db(fact, KNOWLEDGE_BASE_DB)
+    await update.message.reply_text(f"Факт '{fact}' добавлен в базу знаний.", reply_markup=ReplyKeyboardRemove())
+    logger.info(f"Факт '{fact}' добавлен администратором {user_id}")
 
 # Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -787,21 +772,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Обработка запросов к базе знаний и ИИ
     if not handled:
-        # Проверка в knowledge_base.json с регистронезависимым поиском
-        user_input_lower = user_input.lower()
-        for key, value in KNOWLEDGE_BASE_JSON.items():
-            if user_input_lower in key.lower():
-                await update.message.reply_text(value, reply_markup=default_reply_markup)
-                log_request(user_id, user_input, value)
-                logger.info(f"Ответ найден в knowledge_base.json для запроса '{user_input}': {value}")
-                return
-
         # Проверка в базе знаний PostgreSQL
+        user_input_lower = user_input.lower()
         for fact in KNOWLEDGE_BASE_DB:
             if user_input_lower in fact.lower():
                 await update.message.reply_text(fact, reply_markup=default_reply_markup)
                 log_request(user_id, user_input, fact)
-                logger.info(f"Ответ найден в knowledge_base (DB) для запроса '{user_input}': {fact}")
+                logger.info(f"Ответ найден в knowledge_base для запроса '{user_input}': {fact}")
                 return
 
         # Запрос к Grok API с попыткой нескольких моделей
@@ -883,6 +860,7 @@ def main():
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
+        app.add_handler(CommandHandler("add_fact", add_fact))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
