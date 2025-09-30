@@ -47,10 +47,16 @@ except Exception as e:
     raise ValueError("Не удалось подключиться к базе данных.")
 
 
-# Функция для инициализации таблиц (создаёт их, если не существуют)
-def init_db(conn):
+# Функция для инициализации таблиц (с опцией удаления старых)
+def init_db(conn, force_recreate=False):
     try:
         with conn.cursor() as cur:
+            if force_recreate:
+                # Удаляем старые таблицы, если указано
+                cur.execute(
+                    "DROP TABLE IF EXISTS request_logs, knowledge_base, user_profiles, allowed_users, allowed_admins;")
+                logger.info("Старые таблицы удалены.")
+
             # Создание таблицы allowed_admins
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS allowed_admins (
@@ -66,19 +72,22 @@ def init_db(conn):
             # Создание таблицы user_profiles
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
-                    user_id BIGINT NOT NULL PRIMARY KEY,
-                    fio TEXT,
-                    name TEXT,
-                    region TEXT
+                    user_id BIGINT NOT NULL PRIMARY KEY
                 );
             """)
+            # Добавляем столбцы, если их нет (ALTER ADD IF NOT EXISTS)
+            cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS fio TEXT;")
+            cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS name TEXT;")
+            cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS region TEXT;")
+
             # Создание таблицы knowledge_base
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_base (
-                    id SERIAL PRIMARY KEY,
-                    fact TEXT NOT NULL
+                    id SERIAL PRIMARY KEY
                 );
             """)
+            cur.execute("ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS fact TEXT NOT NULL;")
+
             # Создание таблицы request_logs
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS request_logs (
@@ -94,7 +103,7 @@ def init_db(conn):
                 INSERT INTO allowed_admins (id) VALUES (6909708460) ON CONFLICT DO NOTHING;
             """)
             conn.commit()
-            logger.info("Все таблицы успешно созданы или уже существуют.")
+            logger.info(f"Все таблицы успешно созданы или обновлены. Force recreate: {force_recreate}")
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
         conn.rollback()  # Откат изменений при ошибке
@@ -102,7 +111,8 @@ def init_db(conn):
 
 
 # Инициализируем таблицы при запуске
-init_db(conn)
+# Здесь укажи force_recreate=True, если хочешь удалить старые таблицы и создать новые (потеряешь данные!)
+init_db(conn, force_recreate=False)  # Измени на True для первого запуска, если нужно очистить
 
 # Инициализация клиента OpenAI
 client = OpenAI(
