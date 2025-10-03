@@ -223,9 +223,8 @@ FEDERAL_DISTRICTS = {
         "Сахалинская область", "Еврейская автономная область", "Чукотский автономный округ"
     ]
 }
-#комит
-# Функции для работы с администраторами
 
+# Функции для работы с администраторами
 def load_allowed_admins() -> List[int]:
     try:
         with conn.cursor() as cur:
@@ -1174,6 +1173,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
                                     reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Основная функция
+#comit
 def main():
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
