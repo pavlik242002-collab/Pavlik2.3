@@ -1,4 +1,5 @@
-import asyncio
+from __future__ import annotations
+
 import os
 import logging
 import requests
@@ -12,17 +13,6 @@ from urllib.parse import quote
 from openai import OpenAI
 import psycopg2
 from duckduckgo_search import DDGS
-import nltk
-from nltk.tokenize import word_tokenize
-import re
-
-# Загрузка данных NLTK
-nltk.data.path.append(os.path.join(os.path.dirname(__file__), 'nltk_data'))
-try:
-    nltk.download('punkt', download_dir=os.path.join(os.path.dirname(__file__), 'nltk_data'))
-    nltk.download('punkt_tab', download_dir=os.path.join(os.path.dirname(__file__), 'nltk_data'))
-except Exception as e:
-    logger.error(f"Ошибка при загрузке данных NLTK: {str(e)}")
 
 # Настройка логирования
 logging.basicConfig(
@@ -48,29 +38,25 @@ if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
     logger.error("Токены или DATABASE_URL не найдены в .env файле!")
     raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL в .env")
 
-# Подключение к Postgres (Railway)
+# Подключение к Postgres
 try:
     conn = psycopg2.connect(DATABASE_URL)
-    logger.info("Подключение к Postgres в Railway успешно.")
+    logger.info("Подключение к Postgres успешно.")
 except Exception as e:
     logger.error(f"Ошибка подключения к Postgres: {str(e)}")
     raise ValueError("Не удалось подключиться к базе данных.")
 
-# Инициализация клиента OpenAI (xAI API)
+# Инициализация клиента OpenAI
 client = OpenAI(
     base_url="https://api.x.ai/v1",
     api_key=XAI_TOKEN,
 )
-
-# Глобальный словарь для хранения истории чатов
-histories: Dict[int, Dict[str, Any]] = {}
 
 
 # Инициализация таблиц в PostgreSQL
 def init_db(conn):
     try:
         with conn.cursor() as cur:
-            # Проверка и создание таблицы allowed_admins
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -88,7 +74,6 @@ def init_db(conn):
             else:
                 logger.info("Таблица allowed_admins уже существует.")
 
-            # Проверка и создание таблицы allowed_users
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -105,7 +90,6 @@ def init_db(conn):
             else:
                 logger.info("Таблица allowed_users уже существует.")
 
-            # Проверка и создание таблицы user_profiles
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -125,7 +109,6 @@ def init_db(conn):
             else:
                 logger.info("Таблица user_profiles уже существует.")
 
-            # Проверка и создание таблицы request_logs
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -146,36 +129,13 @@ def init_db(conn):
             else:
                 logger.info("Таблица request_logs уже существует.")
 
-            # Проверка и исправление таблицы knowledge_base
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'knowledge_base'
                 );
             """)
-            table_exists = cur.fetchone()[0]
-
-            # Проверяем наличие столбца fact_text
-            if table_exists:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.columns 
-                        WHERE table_name = 'knowledge_base' AND column_name = 'fact_text'
-                    );
-                """)
-                if not cur.fetchone()[0]:
-                    logger.warning("Столбец fact_text отсутствует в таблице knowledge_base. Пересоздаем таблицу.")
-                    cur.execute(
-                        "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'knowledge_base' AND column_name = 'text');")
-                    if cur.fetchone()[0]:
-                        cur.execute("ALTER TABLE knowledge_base RENAME COLUMN text TO fact_text;")
-                        logger.info("Столбец text переименован в fact_text.")
-                    else:
-                        cur.execute("DROP TABLE knowledge_base;")
-                        table_exists = False
-                        logger.info("Таблица knowledge_base удалена из-за неверной структуры.")
-
-            if not table_exists:
+            if not cur.fetchone()[0]:
                 cur.execute("""
                     CREATE TABLE knowledge_base (
                         id SERIAL PRIMARY KEY,
@@ -210,14 +170,6 @@ def init_db(conn):
                     ("Слёт ВСКС - Всероссийский слёт студентов-спасателей и добровольцев в ЧС, V Всероссийский слёт студентов-спасателей и добровольцев в ЧС пройдёт с 30 сентября по 5 октября 2025 года на территории учебно-тренировочного полигона пожарных и спасателей в Московской области.",
                      6909708460),
                     ("Андреев Алексей Евгеньевич - Заместитель руководителя ВСКС по развитию региональных отделений ВСКС и взаимодействию с ними.",
-                     6909708460),
-                    ("Исаенко Алена Андреевна - сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается координацией деятельности и развития студенческих спасательных отрядов в региональных отделениях ВСКС, занимается набором добровольцев на ежегодные слет и форум ВСКС, контакт: @al_isaenko.",
-                     6909708460),
-                    ("Барладян Ирина Алексеевна - Заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается подготовкой соглашений по передаче оборудования в региональные отделения ВСКС, также Ирина занимается инвентаризацией оборудования в РО ВСКС, контакт: @Irina_marz.",
-                     6909708460),
-                    ("Задачи участников гуманитарной миссии в Ростовской области - Основные задачи участников гуманитарной миссии в Ростовской области:\n1. Работа в гуманитарном центре:\n✔\uFE0FРазгрузочно-погрузочные работы;\n✔\uFE0FСбор продуктовых и гигиенических наборов.\n\n2. Выезды по Ростовской области:\n✔\uFE0FЛиквидация последствий ЧС;\n✔\uFE0FУчастие в АВР.",
-                     6909708460),
-                    ("Задачи участников гуманитарной миссии в Курской области - Основные задачи участников гуманитарной миссии в Курской области:\n1. Ликвидация последствий ЧС:\n✔\uFE0FРазбор завалов;\n\n2. Оказание адресной помощи жителям Белгородской области:\n✔\uFE0FРазмещение в ПВР;\n✔\uFE0FПеревозка вещей;\n✔\uFE0FАдресная помощь пострадавшим.\n\n3. Проведение мастер-классов для детей из приграничных территорий:\n✔\uFE0FАльпинистская подготовка;\n✔\uFE0FОказание первой помощи;\n✔\uFE0FПожарная безопасность.\n\n4. Работа на складе:\n✔\uFE0FСборка гуманитарных пакетов;\n✔\uFE0FИнвентаризация;\n✔\uFE0FПрием/отправка гуманитарной помощи.",
                      6909708460)
                 ]
                 for fact, admin_id in initial_facts:
@@ -226,7 +178,7 @@ def init_db(conn):
                     """, (fact, admin_id))
                 logger.info("Таблица knowledge_base создана с начальными фактами.")
             else:
-                logger.info("Таблица knowledge_base уже существует с правильной структурой.")
+                logger.info("Таблица knowledge_base уже существует.")
 
             conn.commit()
             logger.info("Все таблицы проверены и созданы при необходимости.")
@@ -393,20 +345,16 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
         conn.rollback()
 
 
-# Функции для работы с базой знаний в Postgres (Railway)
+# Функции для работы с базой знаний в Postgres
 def load_knowledge_base() -> List[Dict[str, Any]]:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, fact_text FROM knowledge_base ORDER BY timestamp DESC")
             facts = [{"id": row[0], "text": row[1]} for row in cur.fetchall()]
-            logger.info(f"Загружено {len(facts)} фактов из таблицы knowledge_base в Railway")
-            for name in ['козеев', 'павлик', 'андреев', 'багаутдинов']:
-                name_facts = [f for f in facts if name in f['text'].lower()]
-                logger.info(
-                    f"Факты о '{name}': {len(name_facts)} — пример: {name_facts[0]['text'][:100] if name_facts else 'Нет'}")
+            logger.info(f"Загружено {len(facts)} фактов из таблицы knowledge_base")
             return facts
     except Exception as e:
-        logger.error(f"Ошибка при загрузке knowledge_base из Railway: {str(e)}")
+        logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
         conn.rollback()
         return []
 
@@ -419,7 +367,7 @@ def save_knowledge_fact(fact: str, added_by: int) -> None:
                 (fact.strip(), added_by)
             )
             conn.commit()
-            logger.info(f"Факт '{fact[:50]}...' добавлен в knowledge_base в Railway администратором {added_by}")
+            logger.info(f"Факт '{fact}' добавлен в knowledge_base администратором {added_by}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении факта в knowledge_base: {str(e)}")
         conn.rollback()
@@ -431,7 +379,7 @@ def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
             cur.execute("DELETE FROM knowledge_base WHERE id = %s", (fact_id,))
             if cur.rowcount > 0:
                 conn.commit()
-                logger.info(f"Факт с ID {fact_id} удален администратором {admin_id} из Railway")
+                logger.info(f"Факт с ID {fact_id} удален администратором {admin_id}")
                 return True
             else:
                 logger.warning(f"Факт с ID {fact_id} не найден для удаления администратором {admin_id}")
@@ -442,53 +390,35 @@ def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
         return False
 
 
-# Улучшенный поиск фактов
+# Улучшенный поиск фактов (топ-5 релевантных)
 def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> List[str]:
     query_lower = query.lower().strip()
-    query_tokens = word_tokenize(query_lower, language='russian')
-    query_words = [re.sub(r'[^\w\s]', '', w) for w in query_tokens if
-                   w not in ['кто', 'такая', 'такой', 'что', 'такое', 'кто-то', 'это', 'есть']]
-
+    # Ключевые слова и синонимы для тематики ВСКС
     synonyms = {
         "вскс": ["вскс", "студенческий корпус спасателей", "спасатели"],
         "андреев": ["андреев", "алексей евгеньевич"],
         "гуманитарные миссии": ["гуманитарные", "миссии", "помощь"],
-        "павлик": ["павлик", "кристина валентиновна", "кристина павлик", "павлик кристина", "@kristina_pavlik"],
-        "кристина": ["кристина", "павлик", "павлик кристина", "кристина валентиновна", "@kristina_pavlik"],
-        "козеев": ["козеев", "евгений викторович"],
-        "багаутдинов": ["багаутдинов", "ахмет айратович", "@baa_msk"],
-        "кременецкая": ["кременецкая", "галина сергеевна", "@ikremenetskaya"],
-        "локтионова": ["локтионова", "дарья петровна", "@otoorukun"],
-        "исаенко": ["исаенко", "алена андреевна", "@al_isaenko"],
-        "барладян": ["барладян", "ирина алексеевна", "@irina_marz"],
+        # Добавьте больше синонимов по необходимости
     }
 
     scores = []
     for fact in knowledge_base:
         fact_lower = fact['text'].lower()
-        fact_tokens = word_tokenize(fact_lower, language='russian')
         score = 0
-
+        # Точное совпадение запроса
         if query_lower in fact_lower:
-            score += 10
-        for word in query_words:
-            if word in fact_tokens:
-                score += 2
-            elif word in fact_lower:
-                score += 1
+            score += 3
+        # Совпадение по словам
+        query_words = query_lower.split()
+        score += sum(1 for word in query_words if word in fact_lower)
+        # Совпадение по синонимам
         for syn_key, syn_list in synonyms.items():
-            if any(syn in query_lower for syn in syn_list):
-                for syn in syn_list:
-                    if syn in fact_lower:
-                        score += 3
-        for name in ['багаутдинов ахмет', 'павлик кристина', 'козеев евгений', 'андреев алексей',
-                     'кременецкая галина', 'локтионова дарья', 'исаенко алёна', 'барладян ирина']:
-            if name in query_lower and name in fact_lower:
-                score += 5
+            if syn_key in query_lower:
+                score += sum(1 for syn in syn_list if syn in fact_lower)
         if score > 0:
             scores.append((score, fact['text']))
-            logger.info(f"Score {score} для факта '{fact['text'][:50]}...' на запрос '{query}'")
 
+    # Сортировка по релевантности, топ-5
     scores.sort(key=lambda x: x[0], reverse=True)
     matching_facts = [fact for _, fact in scores[:5]]
     logger.info(
@@ -638,53 +568,90 @@ ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
 KNOWLEDGE_BASE = load_knowledge_base()
 
-
-# Функция генерации AI-ответа
-async def generate_ai_response(user_id: int, user_input: str, user_name: str, chat_id: int) -> str:
-    global KNOWLEDGE_BASE, histories
-    KNOWLEDGE_BASE = load_knowledge_base()
-    all_facts_text = "\n".join([fact['text'] for fact in KNOWLEDGE_BASE])
-    system_content = f"""
+# Обновленный системный промпт с примерами
+system_prompt = """
 Ты — полезный чат-бот ВСКС. Всегда отвечай на русском языке, кратко, по делу. Начинай ответ с "{user_name}, ".
 
-**СТРОГО** используй ТОЛЬКО факты из базы знаний, указанной ниже, как единственный источник информации. НИКОГДА не придумывай информацию, не добавляй данные из своих знаний или внешних источников, если в базе есть релевантные факты. Если релевантные факты найдены, объединяй их в связный ответ, добавляя краткое объяснение. Если фактов нет, сообщи об этом и предложи уточнить запрос. Игнорируй веб-поиск, если база знаний содержит информацию.
-
-База знаний из Railway (используй как единственный источник):
-{all_facts_text}
+ПРИОРИТЕТ: Используй факты из базы знаний как основной источник. Если релевантные факты предоставлены, объединяй их в coherent ответ, добавляя объяснения и предложения уточнить.
 
 Примеры ответов:
 - Запрос: "кто такой Андреев Алексей?"
-  Ответ: "{user_name}, Андреев Алексей Евгеньевич — заместитель руководителя Всероссийского студенческого корпуса спасателей (ВСКС) по развитию региональных отделений и взаимодействию с ними. Он отвечает за координацию работы с региональными структурами организации. Если есть конкретные вопросы, уточни!"
-- Запрос: "кто такая Павлик Кристина?"
-  Ответ: "{user_name}, Павлик Кристина Валентиновна — заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается набором добровольцев на гуманитарные миссии ВСКС и ликвидации последствий ЧС, контакт: @kristina_pavlik. Уточни, если нужны детали!"
-- Запрос: "кто такой несуществующий человек?"
-  Ответ: "{user_name}, в базе знаний нет информации о таком человеке. Уточни детали или имя, чтобы я мог проверить еще раз!"
+  Ответ: "Кристина, Андреев Алексей Евгеньевич — заместитель руководителя Всероссийского студенческого корпуса спасателей (ВСКС) по развитию региональных отделений и взаимодействию с ними. Он отвечает за координацию работы с региональными структурами организации. Если есть конкретные вопросы, связанные с его деятельностью, могу помочь уточнить детали."
+
+- Запрос: "Что такое ВСКС?"
+  Ответ: "Кристина, ВСКС — это Всероссийский студенческий корпус спасателей. Организация основана 22 апреля 2001 года по инициативе Министра МЧС России Сергея Кужугетовича Шойгу. ВСКС объединяет более 8 000 добровольцев из 88 субъектов РФ. Основные задачи включают участие в ликвидации последствий чрезвычайных ситуаций (ЧС), проведение гуманитарных миссий, подготовку студентов-спасателей и организацию мероприятий, таких как форумы и слёты. Если есть вопросы о структуре, задачах или участии, готов рассказать подробнее!"
+
+Если фактов нет, используй веб-поиск или свои знания, но всегда проверяй на актуальность.
 """
+
+# Сохранение истории переписки
+histories: Dict[int, Dict[str, Any]] = {}
+
+
+# Функция для генерации AI-ответа
+async def generate_ai_response(user_id: int, user_input: str, user_name: str, chat_id: int) -> str:
+    global KNOWLEDGE_BASE
+    if not KNOWLEDGE_BASE:
+        KNOWLEDGE_BASE = load_knowledge_base()
+
+    # Поиск релевантных фактов
+    matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
+
+    # Инициализация истории
     if chat_id not in histories:
-        histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_content}]}
+        histories[chat_id] = {"name": user_name, "messages": [
+            {"role": "system", "content": system_prompt.replace("{user_name}", user_name)}]}
 
     messages = histories[chat_id]["messages"]
-    matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
+
     if matching_facts:
+        # Если факты найдены: используем их как приоритет
         facts_text = "\n".join(matching_facts)
-        messages.append(
-            {"role": "system", "content": f"Релевантные факты для запроса (приоритизируй их): {facts_text}"})
-        logger.info(f"Найдено {len(matching_facts)} релевантных фактов для user_id {user_id}: {facts_text[:100]}...")
+        fact_prompt = f"""
+Используй ТОЛЬКО эти релевантные факты из базы знаний для ответа на вопрос '{user_input}'.
+Факты: {facts_text}
+
+Объедини факты в coherent, информативный ответ. Добавь объяснения, структуру и предложение уточнить. 
+Не добавляй информацию извне.
+        """
+        messages.append({"role": "system", "content": fact_prompt})
+        logger.info(f"Генерирую ответ на основе {len(matching_facts)} фактов для user_id {user_id}")
     else:
-        logger.info(f"Нет релевантных фактов для '{user_input}' для user_id {user_id}")
+        # Если фактов нет, добавляем топ-10 общих фактов, если запрос о ВСКС
+        if any(word in user_input.lower() for word in ["вскс", "спасатели", "корпус"]):
+            top_facts = [fact['text'] for fact in KNOWLEDGE_BASE[:10]]
+            facts_text = "; ".join(top_facts)
+            messages.append({"role": "system", "content": f"База знаний (используй как приоритет): {facts_text}"})
+        # Веб-поиск если нужно
+        need_search = any(word in user_input.lower() for word in [
+            "актуальная информация", "последние новости", "найди в интернете", "поиск",
+            "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о"
+        ])
+        if need_search:
+            search_results_json = web_search(user_input)
+            try:
+                results = json.loads(search_results_json)
+                if isinstance(results, list):
+                    extracted_text = "\n".join(
+                        [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results])
+                messages.append({"role": "system", "content": f"Актуальные факты из поиска: {extracted_text}"})
+            except json.JSONDecodeError:
+                pass
 
     messages.append({"role": "user", "content": user_input})
     if len(messages) > 20:
         messages = messages[:1] + messages[-19:]
 
+    # Запрос к API
     models_to_try = [XAI_MODEL, "grok", "grok-3", "grok-4"]
-    ai_response = f"{user_name}, извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
+    ai_response = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
+
     for model in models_to_try:
         try:
             completion = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0.5,
+                temperature=0.7,
                 stream=False
             )
             ai_response = completion.choices[0].message.content.strip()
@@ -695,7 +662,6 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
             continue
 
     histories[chat_id]["messages"].append({"role": "assistant", "content": ai_response})
-    log_request(user_id, user_input, ai_response)
     return ai_response
 
 
@@ -746,7 +712,7 @@ async def add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not any(f['text'] == fact for f in KNOWLEDGE_BASE):
         save_knowledge_fact(fact, user_id)
         KNOWLEDGE_BASE = load_knowledge_base()
-        await update.message.reply_text(f"{user_name}, факт '{fact}' добавлен в базу знаний в Railway.",
+        await update.message.reply_text(f"{user_name}, факт '{fact}' добавлен в базу знаний.",
                                         reply_markup=ReplyKeyboardRemove())
         logger.info(f"Факт '{fact}' добавлен администратором {user_id} в knowledge_base")
     else:
@@ -806,8 +772,8 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [
         ['Добавить пользователя', 'Добавить администратора'],
         ['Список пользователей', 'Список администраторов'],
-        ['Удалить пользователя', 'Удалить факт'],
-        ['Назад']
+        ['Удалить пользователя', 'Удалить файл'],
+        ['Удалить факт', 'Назад']
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(f"{user_name}, выберите действие:", reply_markup=reply_markup)
@@ -987,7 +953,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError:
             await update.message.reply_text(f"{user_name}, введите корректный ID факта (число).",
                                             reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            return
+        return
 
     if context.user_data.get("awaiting_user_id", False):
         try:
@@ -1090,14 +1056,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         USER_PROFILES[user_id]["name"] = user_input.strip()
         save_user_profiles(USER_PROFILES)
         context.user_data["awaiting_name"] = False
+        user_name = user_input.strip()
         await show_main_menu(update, context)
-        await update.message.reply_text(
-            f"{user_input.strip()}, рад знакомству! Задавайте вопросы или используйте меню.",
-            reply_markup=default_reply_markup)
+        await update.message.reply_text(f"{user_name}, рад знакомству! Задавайте вопросы или используйте меню.",
+                                        reply_markup=default_reply_markup)
         return
 
     handled = False
-    if user_input == "Документы для РО":
+    if user_input == "Загрузить файл":
+        context.user_data["awaiting_upload"] = True
+        await update.message.reply_text(
+            f"{user_name}, отправьте файл (поддерживаются .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg).",
+            reply_markup=ReplyKeyboardMarkup([['Отмена']], resize_keyboard=True))
+        handled = True
+
+    elif user_input == "Документы для РО":
         context.user_data['current_mode'] = 'documents_nav'
         context.user_data['current_path'] = '/documents/'
         context.user_data.pop('file_list', None)
@@ -1198,6 +1171,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_main_menu(update, context)
         handled = True
 
+    elif user_input == "Отмена":
+        context.user_data.pop('awaiting_upload', None)
+        await show_main_menu(update, context)
+        handled = True
+
     if context.user_data.get('current_mode') == 'documents_nav':
         current_path = context.user_data.get('current_path', '/documents/')
         dirs = list_yandex_disk_directories(current_path)
@@ -1219,6 +1197,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await show_current_docs(update, context, is_return=True)
             handled = True
 
+    # Если сообщение не было обработано как специальная команда или состояние, обрабатываем как запрос к AI
     if not handled:
         logger.info(f"Обрабатываю запрос для user_id {user_id}: {user_input}")
         ai_response = await generate_ai_response(user_id, user_input, user_name, chat_id)
@@ -1298,9 +1277,8 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
 
 
 # Основная функция
-async def main_async():
+def main():
     try:
-        logger.info("Инициализация бота...")
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("add_fact", add_fact))
@@ -1308,59 +1286,11 @@ async def main_async():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
-
-        # Удаление webhook, если он был настроен ранее
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook удален, если существовал.")
-
-        # Запуск приложения в режиме polling
-        logger.info("Запуск бота в режиме polling...")
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(
-            poll_interval=1.0,  # Интервал между запросами (в секундах)
-            timeout=10,  # Таймаут для long polling
-            drop_pending_updates=True  # Сбрасываем накопленные обновления при старте
-        )
-        logger.info("Бот успешно запущен в режиме polling.")
-
-        # Держим задачу активной, чтобы цикл не завершался
-        while True:
-            await asyncio.sleep(3600)  # Спим час, чтобы не нагружать CPU
-
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
-    finally:
-        logger.info("Завершение работы бота...")
-        if app.updater and app.updater.running:
-            await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
-        logger.info("Бот полностью остановлен.")
-
-
-def run_bot():
-    """
-    Запускает бота, используя существующий событийный цикл, если он уже активен.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # Нет запущенного цикла, создаем новый
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    if loop.is_running():
-        logger.info("Событийный цикл уже запущен, используем его.")
-        # Создаем задачу в существующем цикле
-        loop.create_task(main_async())
-        # Не завершаем цикл, так как он управляется Railway
-        return
-    else:
-        logger.info("Запуск нового событийного цикла.")
-        loop.run_until_complete(main_async())
 
 
 if __name__ == '__main__':
-    run_bot()
+    main()
