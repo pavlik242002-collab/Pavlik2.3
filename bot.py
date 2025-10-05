@@ -503,11 +503,11 @@ KNOWLEDGE_BASE = load_knowledge_base()
 # Системный промпт для ИИ
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
-Ваша главная задача — отвечать, используя предоставленные факты из базы знаний, которые являются приоритетным источником информации.
-Если в базе знаний есть подходящий факт, отвечайте только на основе него, без обращения к другим источникам.
-Если подходящего факта нет, используйте результаты веб-поиска (если они доступны) или свои знания, но только после проверки базы знаний.
+Ваша главная задача — отвечать, используя предоставленные релевантные факты из базы знаний, которые являются приоритетным источником информации.
+Объединяй релевантные факты в coherentный, информативный ответ на русском языке. Если фактов несколько и они связаны, интегрируй их логично, добавляя объяснения или контекст на основе своих знаний.
+Если подходящих фактов нет, используй результаты веб-поиска (если они доступны) или свои знания.
 Всегда учитывай полный контекст разговора.
-Отвечай кратко, по делу, на русском языке, без лишних объяснений.
+Отвечай кратко, по делу, на русском языке, без лишних объяснений. Начинай ответ с обращения по имени пользователя, если оно известно.
 """
 
 # Сохранение истории переписки
@@ -888,9 +888,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if context.user_data.get("awaiting_name", False):
-        USER_PROFILES[user_id]["name"] = user_input.strip()
+        new_name = user_input.strip()
+        USER_PROFILES[user_id]["name"] = new_name
         save_user_profiles(USER_PROFILES)
         context.user_data["awaiting_name"] = False
+        user_name = new_name  # Обновляем user_name после сохранения
         await show_main_menu(update, context)
         await update.message.reply_text(f"{user_name}, рад знакомству! Задавайте вопросы или используйте меню.",
                                         reply_markup=default_reply_markup)
@@ -1033,25 +1035,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             KNOWLEDGE_BASE = load_knowledge_base()
         logger.info(f"База знаний содержит {len(KNOWLEDGE_BASE)} фактов")
 
-        # Проверка базы знаний
-        matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
-        if matching_facts:
-            response = "\n".join(matching_facts)
-            final_response = f"{user_name}, {response}"
-            await update.message.reply_text(final_response, reply_markup=default_reply_markup)
-            log_request(user_id, user_input, final_response)
-            logger.info(f"Ответ из базы знаний для user_id {user_id}: {response}")
-            return
-
         # Инициализация истории сообщений
         if chat_id not in histories:
             histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_prompt}]}
 
-        # Добавляем базу знаний в контекст
-        if KNOWLEDGE_BASE:
-            knowledge_text = "Факты из базы знаний (используй их как приоритетный источник): " + "; ".join([fact['text'] for fact in KNOWLEDGE_BASE])
-            histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
-            logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
+        # Поиск релевантных фактов
+        relevant_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
+        if relevant_facts:
+            relevant_text = "Релевантные факты из базы знаний (используй их как приоритетный источник и объединяй логично): " + "\n".join(relevant_facts)
+            histories[chat_id]["messages"].append({"role": "system", "content": relevant_text})
+            logger.info(f"Добавлены релевантные факты в контекст для user_id {user_id}: {len(relevant_facts)} фактов")
 
         # Проверка необходимости веб-поиска
         need_search = any(word in user_input.lower() for word in [
@@ -1069,7 +1062,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
                 else:
                     extracted_text = search_results_json
-                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты из поиска: {extracted_text}"})
+                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты из поиска (используй для дополнения): {extracted_text}"})
                 logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
             except json.JSONDecodeError:
                 histories[chat_id]["messages"].append(
@@ -1119,7 +1112,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error("Все модели недоступны (403). Проверьте токен и подписку.")
             ai_response = "Все модели недоступны (403). Обновите SuperGrok или X Premium+."
 
-        final_response = f"{user_name}, {ai_response}"
+        final_response = f"{user_name}, {ai_response}" if not ai_response.startswith(user_name + ", ") else ai_response
         histories[chat_id]["messages"].append({"role": "assistant", "content": ai_response})
         await update.message.reply_text(final_response, reply_markup=default_reply_markup)
         log_request(user_id, user_input, final_response)
