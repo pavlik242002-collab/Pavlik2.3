@@ -166,18 +166,12 @@ def init_db(conn):
                 """)
                 if not cur.fetchone()[0]:
                     logger.warning("Столбец fact_text отсутствует в таблице knowledge_base. Пересоздаем таблицу.")
-                    # Сохраняем данные, если есть столбец text
-                    cur.execute("""
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.columns 
-                            WHERE table_name = 'knowledge_base' AND column_name = 'text'
-                        );
-                    """)
+                    cur.execute(
+                        "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'knowledge_base' AND column_name = 'text');")
                     if cur.fetchone()[0]:
                         cur.execute("ALTER TABLE knowledge_base RENAME COLUMN text TO fact_text;")
                         logger.info("Столбец text переименован в fact_text.")
                     else:
-                        # Если структура совсем неверная, пересоздаем таблицу
                         cur.execute("DROP TABLE knowledge_base;")
                         table_exists = False
                         logger.info("Таблица knowledge_base удалена из-за неверной структуры.")
@@ -452,13 +446,10 @@ def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
 # Улучшенный поиск фактов
 def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> List[str]:
     query_lower = query.lower().strip()
-    # Токенизация запроса
     query_tokens = word_tokenize(query_lower, language='russian')
-    # Удаляем служебные слова и нормализуем
     query_words = [re.sub(r'[^\w\s]', '', w) for w in query_tokens if
                    w not in ['кто', 'такая', 'такой', 'что', 'такое', 'кто-то', 'это', 'есть']]
 
-    # Расширенные синонимы для имен и тем
     synonyms = {
         "вскс": ["вскс", "студенческий корпус спасателей", "спасатели"],
         "андреев": ["андреев", "алексей евгеньевич"],
@@ -479,35 +470,26 @@ def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> Li
         fact_tokens = word_tokenize(fact_lower, language='russian')
         score = 0
 
-        # Точное совпадение полного запроса
         if query_lower in fact_lower:
-            score += 10  # Высокий приоритет для точного совпадения
-
-        # Совпадение по словам
+            score += 10
         for word in query_words:
             if word in fact_tokens:
                 score += 2
             elif word in fact_lower:
                 score += 1
-
-        # Совпадение по синонимам
         for syn_key, syn_list in synonyms.items():
             if any(syn in query_lower for syn in syn_list):
                 for syn in syn_list:
                     if syn in fact_lower:
                         score += 3
-
-        # Дополнительный бонус за совпадение полного имени
         for name in ['багаутдинов ахмет', 'павлик кристина', 'козеев евгений', 'андреев алексей',
                      'кременецкая галина', 'локтионова дарья', 'исаенко алёна', 'барладян ирина']:
             if name in query_lower and name in fact_lower:
                 score += 5
-
         if score > 0:
             scores.append((score, fact['text']))
             logger.info(f"Score {score} для факта '{fact['text'][:50]}...' на запрос '{query}'")
 
-    # Сортировка по релевантности, топ-5
     scores.sort(key=lambda x: x[0], reverse=True)
     matching_facts = [fact for _, fact in scores[:5]]
     logger.info(
@@ -661,9 +643,7 @@ KNOWLEDGE_BASE = load_knowledge_base()
 # Функция генерации AI-ответа
 async def generate_ai_response(user_id: int, user_input: str, user_name: str, chat_id: int) -> str:
     global KNOWLEDGE_BASE, histories
-    KNOWLEDGE_BASE = load_knowledge_base()  # Перезагружаем базу знаний из Railway
-
-    # Подготавливаем все факты для контекста
+    KNOWLEDGE_BASE = load_knowledge_base()
     all_facts_text = "\n".join([fact['text'] for fact in KNOWLEDGE_BASE])
     system_content = f"""
 Ты — полезный чат-бот ВСКС. Всегда отвечай на русском языке, кратко, по делу. Начинай ответ с "{user_name}, ".
@@ -680,17 +660,11 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
   Ответ: "{user_name}, Павлик Кристина Валентиновна — заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается набором добровольцев на гуманитарные миссии ВСКС и ликвидации последствий ЧС, контакт: @kristina_pavlik. Уточни, если нужны детали!"
 - Запрос: "кто такой несуществующий человек?"
   Ответ: "{user_name}, в базе знаний нет информации о таком человеке. Уточни детали или имя, чтобы я мог проверить еще раз!"
-
-Если в базе есть релевантные факты, используй их для ответа. Если фактов нет, четко укажи это и предложи уточнить запрос.
 """
-
-    # Инициализация истории для чата
     if chat_id not in histories:
         histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_content}]}
 
     messages = histories[chat_id]["messages"]
-
-    # Поиск релевантных фактов
     matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
     if matching_facts:
         facts_text = "\n".join(matching_facts)
@@ -702,12 +676,10 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
 
     messages.append({"role": "user", "content": user_input})
     if len(messages) > 20:
-        messages = messages[:1] + messages[-19:]  # Сохраняем системный промпт и последние сообщения
+        messages = messages[:1] + messages[-19:]
 
-    # Запрос к API
     models_to_try = [XAI_MODEL, "grok", "grok-3", "grok-4"]
     ai_response = f"{user_name}, извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
-
     for model in models_to_try:
         try:
             completion = client.chat.completions.create(
@@ -1211,15 +1183,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
         handled = True
 
-    elif user_input == "Удалить файл":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут удалять файлы.",
-                                            reply_markup=default_reply_markup)
-            return
-        context.user_data.pop('awaiting_upload', None)
-        await show_file_list(update, context, for_deletion=True)
-        handled = True
-
     elif user_input == "Удалить факт":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text(f"{user_name}, только администраторы могут удалять факты.",
@@ -1347,23 +1310,18 @@ async def main_async():
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
 
-        # Настройка webhook
-        webhook_url = os.getenv("WEBHOOK_URL")
-        if not webhook_url:
-            logger.error("WEBHOOK_URL не указан в .env файле!")
-            raise ValueError("Укажите WEBHOOK_URL в .env")
+        # Удаление webhook, если он был настроен ранее
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook удален, если существовал.")
 
-        await app.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook установлен на {webhook_url}")
-
-        # Запуск приложения в режиме webhook
-        await app.run_webhook(
-            listen="0.0.0.0",
-            port=int(os.getenv("PORT", 8443)),
-            webhook_url=webhook_url,
-            allowed_updates=Update.ALL_TYPES
+        # Запуск приложения в режиме polling
+        logger.info("Запуск бота в режиме polling...")
+        await app.run_polling(
+            poll_interval=1.0,  # Интервал между запросами (в секундах)
+            timeout=10,  # Таймаут для long polling
+            drop_pending_updates=True  # Сбрасываем накопленные обновления при старте
         )
-        logger.info("Бот успешно запущен в режиме webhook.")
+        logger.info("Бот успешно запущен в режиме polling.")
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
