@@ -181,11 +181,11 @@ init_db(conn)
 # Словарь федеральных округов
 FEDERAL_DISTRICTS = {
     "Центральный федеральный округ": [
-        "Москва", "Белгородская область", "Брянская область", "Владимирская область", "Воронежская область",
+        "Белгородская область", "Брянская область", "Владимирская область", "Воронежская область",
         "Ивановская область", "Калужская область", "Костромская область", "Курская область",
         "Липецкая область", "Московская область", "Орловская область", "Рязанская область",
         "Смоленская область", "Тамбовская область", "Тверская область", "Тульская область",
-        "Ярославская область"
+        "Ярославская область", "Москва"
     ],
     "Северо-Западный федеральный округ": [
         "Республика Карелия", "Республика Коми", "Архангельская область", "Вологодская область",
@@ -194,8 +194,7 @@ FEDERAL_DISTRICTS = {
     ],
     "Южный федеральный округ": [
         "Республика Адыгея", "Республика Калмыкия", "Республика Крым", "Краснодарский край",
-        "Астраханская область", "Волгоградская область", "Ростовская область", "Севастополь",
-        "Донецкая Народная Республика", "Луганская Народная Республика", "Запорожская область", "Херсонская область"
+        "Астраханская область", "Волгоградская область", "Ростовская область", "Севастополь"
     ],
     "Северо-Кавказский федеральный округ": [
         "Республика Дагестан", "Республика Ингушетия", "Кабардино-Балкарская Республика",
@@ -277,22 +276,6 @@ def save_allowed_users(allowed_users: List[int]) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
         conn.rollback()
-
-def delete_allowed_user(user_id_to_delete: int, admin_id: int) -> bool:
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM allowed_users WHERE id = %s", (user_id_to_delete,))
-            if cur.rowcount > 0:
-                conn.commit()
-                logger.info(f"Пользователь с ID {user_id_to_delete} удален администратором {admin_id}")
-                return True
-            else:
-                logger.warning(f"Пользователь с ID {user_id_to_delete} не найден для удаления администратором {admin_id}")
-                return False
-    except Exception as e:
-        logger.error(f"Ошибка при удалении пользователя с ID {user_id_to_delete}: {str(e)}")
-        conn.rollback()
-        return False
 
 # Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
@@ -503,9 +486,10 @@ KNOWLEDGE_BASE = load_knowledge_base()
 # Системный промпт для ИИ
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
-Ваша главная задача — отвечать, используя предоставленные факты из базы знаний, которые являются приоритетным источником информации.
-Если в базе знаний есть подходящий факт, отвечайте только на основе него, без обращения к другим источникам.
-Если подходящего факта нет, используйте результаты веб-поиска (если они доступны) или свои знания, но только после проверки базы знаний.
+Обязательно используй актуальные данные из поиска в истории сообщений для ответов на вопросы о фактах, организациях или событиях.
+Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко.
+Если данных нет, используй свои знания и базу знаний, предоставленную системой.
+Не упоминай процесс поиска, источники или фразы вроде "не знаю" или "уточните".
 Всегда учитывай полный контекст разговора.
 Отвечай кратко, по делу, на русском языке, без лишних объяснений.
 """
@@ -523,12 +507,12 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if user_id not in USER_PROFILES:
         context.user_data["awaiting_fio"] = True
-        await update.message.reply_text("Пожалуйста, напишите своё ФИО.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"{user_name}, напишите своё ФИО.", reply_markup=ReplyKeyboardRemove())
         return
     profile = USER_PROFILES[user_id]
     if profile.get("name") is None:
         context.user_data["awaiting_name"] = True
-        await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
+        await update.message.reply_text(f"{user_name}, как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
                                         reply_markup=ReplyKeyboardRemove())
     else:
         await show_main_menu(update, context)
@@ -598,7 +582,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop('awaiting_admin_id', None)
     context.user_data.pop('awaiting_upload', None)
     context.user_data.pop('awaiting_fact_id', None)
-    context.user_data.pop('awaiting_delete_user_id', None)
     await update.message.reply_text(f"{user_name}, выберите действие:", reply_markup=reply_markup)
 
 # Отображение меню управления пользователями
@@ -608,8 +591,8 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [
         ['Добавить пользователя', 'Добавить администратора'],
         ['Список пользователей', 'Список администраторов'],
-        ['Удалить пользователя', 'Удалить файл'],
-        ['Удалить факт', 'Назад']
+        ['Удалить файл', 'Удалить факт'],
+        ['Назад']
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(f"{user_name}, выберите действие:", reply_markup=reply_markup)
@@ -717,19 +700,9 @@ def log_request(user_id: int, request: str, response: str) -> None:
         logger.error(f"Ошибка при логировании запроса: {str(e)}")
         conn.rollback()
 
-# Поиск фактов в базе знаний
-def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> List[str]:
-    query_lower = query.lower().strip()
-    matching_facts = []
-    for fact in knowledge_base:
-        fact_text_lower = fact['text'].lower()
-        if query_lower in fact_text_lower or any(word in fact_text_lower for word in query_lower.split()):
-            matching_facts.append(fact['text'])
-    return matching_facts
-
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global KNOWLEDGE_BASE, ALLOWED_USERS
+    global KNOWLEDGE_BASE
     user_id: int = update.effective_user.id
     chat_id: int = update.effective_chat.id
     user_input: str = update.message.text.strip()
@@ -751,10 +724,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["awaiting_fio"] = False
             context.user_data["awaiting_federal_district"] = True
             keyboard = [[district] for district in FEDERAL_DISTRICTS.keys()]
-            await update.message.reply_text("Выберите федеральный округ:",
+            await update.message.reply_text(f"{user_name}, выберите федеральный округ:",
                                             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             return
-        await update.message.reply_text("Сначала пройдите регистрацию с /start.")
+        await update.message.reply_text(f"{user_name}, сначала пройдите регистрацию с /start.")
         return
 
     admin_keyboard = [
@@ -828,33 +801,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                             reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
             return
 
-    if context.user_data.get("awaiting_delete_user_id", False):
-        try:
-            user_id_to_delete = int(user_input)
-            if user_id_to_delete == user_id:
-                await update.message.reply_text(f"{user_name}, вы не можете удалить самого себя.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            elif user_id_to_delete in ALLOWED_ADMINS:
-                await update.message.reply_text(f"{user_name}, вы не можете удалить администратора через эту функцию.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            elif delete_allowed_user(user_id_to_delete, user_id):
-                ALLOWED_USERS.remove(user_id_to_delete)
-                if user_id_to_delete in USER_PROFILES:
-                    del USER_PROFILES[user_id_to_delete]
-                    save_user_profiles(USER_PROFILES)
-                await update.message.reply_text(f"{user_name}, пользователь с ID {user_id_to_delete} успешно удалён.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-                logger.info(f"Пользователь {user_id_to_delete} удалён администратором {user_id}")
-            else:
-                await update.message.reply_text(f"{user_name}, пользователь с ID {user_id_to_delete} не найден.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            context.user_data.pop("awaiting_delete_user_id", None)
-            return
-        except ValueError:
-            await update.message.reply_text(f"{user_name}, пожалуйста, введите корректный user_id (число).",
-                                            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            return
-
     if context.user_data.get("awaiting_federal_district", False):
         if user_input in FEDERAL_DISTRICTS:
             context.user_data["selected_federal_district"] = user_input
@@ -880,7 +826,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data.pop("awaiting_region", None)
             context.user_data.pop("selected_federal_district", None)
             context.user_data["awaiting_name"] = True
-            await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
+            await update.message.reply_text(f"{user_name}, как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
                                             reply_markup=ReplyKeyboardRemove())
             return
         await update.message.reply_text(f"{user_name}, выберите из предложенных регионов.",
@@ -967,18 +913,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                         reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
         handled = True
 
-    elif user_input == "Удалить пользователя":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут удалять пользователей.",
-                                            reply_markup=default_reply_markup)
-            return
-        context.user_data["awaiting_delete_user_id"] = True
-        context.user_data.pop('awaiting_upload', None)
-        users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS]) or "Список пользователей пуст."
-        await update.message.reply_text(f"{user_name}, выберите ID пользователя для удаления:\n{users_list}\n\nВведите ID:",
-                                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
-
     elif user_input == "Удалить файл":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text(f"{user_name}, только администраторы могут удалять файлы.",
@@ -1000,7 +934,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif user_input == "Назад":
         context.user_data.pop('awaiting_upload', None)
         context.user_data.pop('awaiting_fact_id', None)
-        context.user_data.pop('awaiting_delete_user_id', None)
         await show_main_menu(update, context)
         handled = True
 
@@ -1027,29 +960,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Если сообщение не было обработано как специальная команда или состояние, обрабатываем как запрос к AI
     if not handled:
-        logger.info(f"Обрабатываю запрос для user_id {user_id}: {user_input}")
+        logger.info(f"Обрабатываю AI-запрос для user_id {user_id}: {user_input}")
+        logger.info(f"История сообщений для chat_id {chat_id}: {histories.get(chat_id, {})}")
         if not KNOWLEDGE_BASE:
             logger.warning("База знаний пуста или не загружена")
             KNOWLEDGE_BASE = load_knowledge_base()
         logger.info(f"База знаний содержит {len(KNOWLEDGE_BASE)} фактов")
-
-        # Проверка базы знаний
-        matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
-        if matching_facts:
-            response = "\n".join(matching_facts)
-            final_response = f"{user_name}, {response}"
-            await update.message.reply_text(final_response, reply_markup=default_reply_markup)
-            log_request(user_id, user_input, final_response)
-            logger.info(f"Ответ из базы знаний для user_id {user_id}: {response}")
-            return
-
-        # Инициализация истории сообщений
+        # Обработка текстового сообщения через API
         if chat_id not in histories:
-            histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_prompt}]}
+            histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-        # Добавляем базу знаний в контекст
+        # Добавляем базу знаний в контекст для всех пользователей
         if KNOWLEDGE_BASE:
-            knowledge_text = "Факты из базы знаний (используй их как приоритетный источник): " + "; ".join([fact['text'] for fact in KNOWLEDGE_BASE])
+            knowledge_text = "Известные факты для использования в ответах: " + "; ".join([fact['text'] for fact in KNOWLEDGE_BASE])
             histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
             logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
 
@@ -1069,11 +992,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
                 else:
                     extracted_text = search_results_json
-                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты из поиска: {extracted_text}"})
+                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты: {extracted_text}"})
                 logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
             except json.JSONDecodeError:
                 histories[chat_id]["messages"].append(
                     {"role": "system", "content": f"Ошибка поиска: {search_results_json}"})
+        else:
+            logger.info(f"Веб-поиск не требуется для запроса: {user_input}")
 
         histories[chat_id]["messages"].append({"role": "user", "content": user_input})
         if len(histories[chat_id]["messages"]) > 20:
