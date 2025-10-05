@@ -665,7 +665,7 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
     return ai_response
 
 
-# Функция для получения user_name (исправленная)
+# Функция для получения user_name
 def get_user_name(user_id: int) -> str:
     profile = USER_PROFILES.get(user_id)
     if profile:
@@ -1027,12 +1027,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["awaiting_region"] = True
             regions = FEDERAL_DISTRICTS[user_input]
             keyboard = [[region] for region in regions]
-            await update.message.reply_text(f"{user_name}, выберите регион:",
+            await update.message.reply_text("Выберите регион:",
                                             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             return
-        await update.message.reply_text(f"{user_name}, выберите из предложенных округов.",
-                                        reply_markup=ReplyKeyboardMarkup(
-                                            [[district] for district in FEDERAL_DISTRICTS.keys()]))
+        await update.message.reply_text("Выберите из предложенных округов.", reply_markup=ReplyKeyboardMarkup(
+            [[district] for district in FEDERAL_DISTRICTS.keys()]))
         return
 
     if context.user_data.get("awaiting_region", False):
@@ -1049,7 +1048,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
                                             reply_markup=ReplyKeyboardRemove())
             return
-        await update.message.reply_text(f"{user_name}, выберите из предложенных регионов.",
+        await update.message.reply_text("Выберите из предложенных регионов.",
                                         reply_markup=ReplyKeyboardMarkup([[region] for region in regions]))
         return
 
@@ -1057,7 +1056,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         USER_PROFILES[user_id]["name"] = user_input.strip()
         save_user_profiles(USER_PROFILES)
         context.user_data["awaiting_name"] = False
-        user_name = user_input.strip()  # Обновляем локально
+        user_name = user_input.strip()
         await show_main_menu(update, context)
         await update.message.reply_text(f"{user_name}, рад знакомству! Задавайте вопросы или используйте меню.",
                                         reply_markup=default_reply_markup)
@@ -1154,15 +1153,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(
             f"{user_name}, выберите ID пользователя для удаления:\n{users_list}\n\nВведите ID:",
             reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
-
-    elif user_input == "Удалить файл":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут удалять файлы.",
-                                            reply_markup=default_reply_markup)
-            return
-        context.user_data.pop('awaiting_upload', None)
-        await show_file_list(update, context, for_deletion=True)
         handled = True
 
     elif user_input == "Удалить факт":
