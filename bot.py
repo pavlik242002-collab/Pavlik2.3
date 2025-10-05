@@ -38,20 +38,19 @@ if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL]):
     logger.error("Токены или DATABASE_URL не найдены в .env файле!")
     raise ValueError("Укажите TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN, DATABASE_URL в .env")
 
-# Подключение к Postgres
+# Подключение к Postgres (Railway)
 try:
     conn = psycopg2.connect(DATABASE_URL)
-    logger.info("Подключение к Postgres успешно.")
+    logger.info("Подключение к Postgres в Railway успешно.")
 except Exception as e:
     logger.error(f"Ошибка подключения к Postgres: {str(e)}")
     raise ValueError("Не удалось подключиться к базе данных.")
 
-# Инициализация клиента OpenAI
+# Инициализация клиента OpenAI (xAI API)
 client = OpenAI(
     base_url="https://api.x.ai/v1",
     api_key=XAI_TOKEN,
 )
-
 
 # Инициализация таблиц в PostgreSQL
 def init_db(conn):
@@ -345,13 +344,13 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
         conn.rollback()
 
 
-# Функции для работы с базой знаний в Postgres
+# Функции для работы с базой знаний в Postgres (Railway)
 def load_knowledge_base() -> List[Dict[str, Any]]:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, fact_text FROM knowledge_base ORDER BY timestamp DESC")
             facts = [{"id": row[0], "text": row[1]} for row in cur.fetchall()]
-            logger.info(f"Загружено {len(facts)} фактов из таблицы knowledge_base")
+            logger.info(f"Загружено {len(facts)} фактов из таблицы knowledge_base в Railway")
             # Проверка фактов о Козеев и других
             for name in ['козеев', 'павлик', 'андреев']:
                 name_facts = [f for f in facts if name in f['text'].lower()]
@@ -359,7 +358,7 @@ def load_knowledge_base() -> List[Dict[str, Any]]:
                     f"Факты о '{name}': {len(name_facts)} — пример: {name_facts[0]['text'][:100] if name_facts else 'Нет'}")
             return facts
     except Exception as e:
-        logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
+        logger.error(f"Ошибка при загрузке knowledge_base из Railway: {str(e)}")
         conn.rollback()
         return []
 
@@ -372,7 +371,7 @@ def save_knowledge_fact(fact: str, added_by: int) -> None:
                 (fact.strip(), added_by)
             )
             conn.commit()
-            logger.info(f"Факт '{fact[:50]}...' добавлен в knowledge_base администратором {added_by}")
+            logger.info(f"Факт '{fact[:50]}...' добавлен в knowledge_base в Railway администратором {added_by}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении факта в knowledge_base: {str(e)}")
         conn.rollback()
@@ -384,7 +383,7 @@ def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
             cur.execute("DELETE FROM knowledge_base WHERE id = %s", (fact_id,))
             if cur.rowcount > 0:
                 conn.commit()
-                logger.info(f"Факт с ID {fact_id} удален администратором {admin_id}")
+                logger.info(f"Факт с ID {fact_id} удален администратором {admin_id} из Railway")
                 return True
             else:
                 logger.warning(f"Факт с ID {fact_id} не найден для удаления администратором {admin_id}")
@@ -580,8 +579,8 @@ ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
 KNOWLEDGE_BASE = load_knowledge_base()
 
-# Обновленный системный промпт с примерами
-system_prompt = """
+# Базовый системный промпт
+base_system_prompt = """
 Ты — полезный чат-бот ВСКС. Всегда отвечай на русском языке, кратко, по делу. Начинай ответ с "{user_name}, ".
 
 ПРИОРИТЕТ: Используй ТОЛЬКО факты из базы знаний как основной источник. Если релевантные факты предоставлены, объединяй их в coherent ответ, добавляя объяснения и предложения уточнить. ИГНОРИРУЙ свои знания и веб-поиск, если факты есть.
@@ -596,66 +595,57 @@ system_prompt = """
 - Запрос: "кто такой козеев?"
   Ответ: "Кристина, Козеев Евгений Викторович — Руководитель Всероссийского студенческого корпуса спасателей (ВСКС). Он отвечает за общее руководство организацией, стратегическое развитие и координацию всех направлений деятельности. Если нужны детали о его роли или контакты, уточни!"
 
-Если фактов нет, используй веб-поиск или свои знания, но всегда проверяй на актуальность и указыва, что это не из базы знаний.
+Если фактов нет, используй веб-поиск или свои знания, но всегда проверяй на актуальность и указывай, что это не из базы знаний.
 """
 
 # Сохранение истории переписки
 histories: Dict[int, Dict[str, Any]] = {}
 
 
-# Функция для генерации AI-ответа
+# Функция для генерации AI-ответа с "обучением" на всех фактах из базы в Railway
 async def generate_ai_response(user_id: int, user_input: str, user_name: str, chat_id: int) -> str:
     global KNOWLEDGE_BASE
-    KNOWLEDGE_BASE = load_knowledge_base()  # Перезагружаем базу знаний каждый раз, чтобы подтянуть новые факты из Postgres
+    KNOWLEDGE_BASE = load_knowledge_base()  # Перезагружаем базу знаний из Railway каждый раз для актуальности
 
-    # Поиск релевантных фактов
-    matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
+    # Подготавливаем все факты для "обучения" (включаем весь контекст в промпт)
+    all_facts_text = "\n".join([fact['text'] for fact in KNOWLEDGE_BASE])
+    system_content = base_system_prompt.replace("{user_name}", user_name) + f"\n\nБаза знаний из Railway для обучения (используй как приоритетный источник для всех ответов):\n{all_facts_text}\n\nСТРОГО используй эту базу знаний для генерации ответов. Объединяй релевантные факты в coherent ответ. Если фактов недостаточно, укажи и предложи веб-поиск только если запрос явно требует актуальной информации."
 
-    # Инициализация истории
+    # Инициализация истории с системным промптом, содержащим все факты
     if chat_id not in histories:
-        histories[chat_id] = {"name": user_name, "messages": [
-            {"role": "system", "content": system_prompt.replace("{user_name}", user_name)}]}
+        histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_content}]}
 
     messages = histories[chat_id]["messages"]
 
+    # Поиск релевантных фактов для дополнительного акцента (но все факты уже в system)
+    matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
     if matching_facts:
-        # Если факты найдены: используем их как приоритет
         facts_text = "\n".join(matching_facts)
-        fact_prompt = f"""
-СТРОГО используй ТОЛЬКО эти релевантные факты из базы знаний для ответа на вопрос '{user_input}'.
-Факты: {facts_text}
-
-Объедини факты в coherent, информативный ответ. Добавь объяснения, структуру и предложение уточнить. 
-ИГНОРИРУЙ свои знания и любую информацию извне, включая веб-поиск. Отвечай ТОЛЬКО на основе фактов выше.
-        """
-        messages.append({"role": "system", "content": fact_prompt})
-        logger.info(f"Генерирую ответ на основе {len(matching_facts)} фактов для user_id {user_id}")
+        messages.append({"role": "system", "content": f"Релевантные факты для этого запроса (приоритизируй их): {facts_text}"})
+        logger.info(f"Генерирую ответ с акцентом на {len(matching_facts)} релевантных фактах для user_id {user_id}")
     else:
-        # Если фактов нет, добавляем топ-10 общих фактов, если запрос о ВСКС
-        if any(word in user_input.lower() for word in ["вскс", "спасатели", "корпус"]):
-            top_facts = [fact['text'] for fact in KNOWLEDGE_BASE[:10]]
-            facts_text = "; ".join(top_facts)
-            messages.append({"role": "system", "content": f"База знаний (используй как приоритет): {facts_text}"})
-        # Веб-поиск если нужно
-        need_search = any(word in user_input.lower() for word in [
-            "актуальная информация", "последние новости", "найди в интернете", "поиск",
-            "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о"
-        ])
-        if need_search:
-            search_results_json = web_search(user_input)
-            try:
-                results = json.loads(search_results_json)
-                if isinstance(results, list):
-                    extracted_text = "\n".join(
-                        [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results])
-                messages.append({"role": "system",
-                                 "content": f"Актуальные факты из поиска (используй только если нет фактов из базы): {extracted_text}"})
-            except json.JSONDecodeError:
-                pass
+        logger.info(f"Нет точных совпадений для '{user_input}', но вся база знаний доступна в промпте.")
+
+    # Веб-поиск, если явно нужно (но с приоритетом базы знаний)
+    need_search = any(word in user_input.lower() for word in [
+        "актуальная информация", "последние новости", "найди в интернете", "поиск",
+        "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о"
+    ])
+    if need_search:
+        search_results_json = web_search(user_input)
+        try:
+            results = json.loads(search_results_json)
+            if isinstance(results, list):
+                extracted_text = "\n".join(
+                    [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results])
+            messages.append({"role": "system",
+                             "content": f"Дополнительные факты из поиска (используй только если база знаний недостаточна): {extracted_text}"})
+        except json.JSONDecodeError:
+            pass
 
     messages.append({"role": "user", "content": user_input})
     if len(messages) > 20:
-        messages = messages[:1] + messages[-19:]
+        messages = messages[:1] + messages[-19:]  # Сохраняем системный промпт и последние сообщения
 
     # Запрос к API
     models_to_try = [XAI_MODEL, "grok", "grok-3", "grok-4"]
@@ -726,8 +716,8 @@ async def add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     fact = ' '.join(args).strip()
     if not any(f['text'] == fact for f in KNOWLEDGE_BASE):
         save_knowledge_fact(fact, user_id)
-        KNOWLEDGE_BASE = load_knowledge_base()  # Перезагружаем базу после добавления
-        await update.message.reply_text(f"{user_name}, факт '{fact}' добавлен в базу знаний.",
+        KNOWLEDGE_BASE = load_knowledge_base()  # Перезагружаем после добавления
+        await update.message.reply_text(f"{user_name}, факт '{fact}' добавлен в базу знаний в Railway.",
                                         reply_markup=ReplyKeyboardRemove())
         logger.info(f"Факт '{fact}' добавлен администратором {user_id} в knowledge_base")
     else:
