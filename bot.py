@@ -20,6 +20,7 @@ import re
 nltk.data.path.append(os.path.join(os.path.dirname(__file__), 'nltk_data'))
 try:
     nltk.download('punkt', download_dir=os.path.join(os.path.dirname(__file__), 'nltk_data'))
+    nltk.download('punkt_tab', download_dir=os.path.join(os.path.dirname(__file__), 'nltk_data'))
 except Exception as e:
     logger.error(f"Ошибка при загрузке данных NLTK: {str(e)}")
 
@@ -1344,28 +1345,21 @@ def run_bot():
     Запускает бота, используя существующий событийный цикл, если он уже активен.
     """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            logger.info("Событийный цикл уже запущен, используем его.")
-            # Создаем задачу в существующем цикле
-            loop.create_task(main_async())
-            # Не завершаем цикл, так как он управляется Railway
-            return
-        else:
-            logger.info("Запуск нового событийного цикла.")
-            loop.run_until_complete(main_async())
-    except RuntimeError as e:
-        if "no running event loop" in str(e):
-            logger.info("Создаем новый событийный цикл.")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(main_async())
-        else:
-            logger.error(f"Ошибка при запуске цикла: {str(e)}")
-            raise
-    except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {str(e)}")
-        raise
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Нет запущенного цикла, создаем новый
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    if loop.is_running():
+        logger.info("Событийный цикл уже запущен, используем его.")
+        # Создаем задачу в существующем цикле
+        loop.create_task(main_async())
+        # Не завершаем цикл, так как он управляется Railway
+        return
+    else:
+        logger.info("Запуск нового событийного цикла.")
+        loop.run_until_complete(main_async())
 
 
 if __name__ == '__main__':
