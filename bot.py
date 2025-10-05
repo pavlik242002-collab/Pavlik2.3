@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+import asyncio
 import os
 import logging
 import requests
@@ -16,7 +15,6 @@ from duckduckgo_search import DDGS
 import nltk
 from nltk.tokenize import word_tokenize
 import re
-import asyncio
 
 # Загрузка данных NLTK
 nltk.data.path.append(os.path.join(os.path.dirname(__file__), 'nltk_data'))
@@ -1316,15 +1314,29 @@ async def main_async():
 
         # Запуск приложения в режиме polling
         logger.info("Запуск бота в режиме polling...")
-        await app.run_polling(
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(
             poll_interval=1.0,  # Интервал между запросами (в секундах)
             timeout=10,  # Таймаут для long polling
             drop_pending_updates=True  # Сбрасываем накопленные обновления при старте
         )
         logger.info("Бот успешно запущен в режиме polling.")
+
+        # Держим задачу активной, чтобы цикл не завершался
+        while True:
+            await asyncio.sleep(3600)  # Спим час, чтобы не нагружать CPU
+
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
+    finally:
+        logger.info("Завершение работы бота...")
+        if app.updater and app.updater.running:
+            await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        logger.info("Бот полностью остановлен.")
 
 
 def run_bot():
@@ -1337,6 +1349,8 @@ def run_bot():
             logger.info("Событийный цикл уже запущен, используем его.")
             # Создаем задачу в существующем цикле
             loop.create_task(main_async())
+            # Не завершаем цикл, так как он управляется Railway
+            return
         else:
             logger.info("Запуск нового событийного цикла.")
             loop.run_until_complete(main_async())
