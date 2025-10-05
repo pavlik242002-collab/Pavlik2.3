@@ -352,6 +352,11 @@ def load_knowledge_base() -> List[Dict[str, Any]]:
             cur.execute("SELECT id, fact_text FROM knowledge_base ORDER BY timestamp DESC")
             facts = [{"id": row[0], "text": row[1]} for row in cur.fetchall()]
             logger.info(f"Загружено {len(facts)} фактов из таблицы knowledge_base")
+            # Проверка фактов о Козеев и других
+            for name in ['козеев', 'павлик', 'андреев']:
+                name_facts = [f for f in facts if name in f['text'].lower()]
+                logger.info(
+                    f"Факты о '{name}': {len(name_facts)} — пример: {name_facts[0]['text'][:100] if name_facts else 'Нет'}")
             return facts
     except Exception as e:
         logger.error(f"Ошибка при загрузке knowledge_base: {str(e)}")
@@ -367,7 +372,7 @@ def save_knowledge_fact(fact: str, added_by: int) -> None:
                 (fact.strip(), added_by)
             )
             conn.commit()
-            logger.info(f"Факт '{fact}' добавлен в knowledge_base администратором {added_by}")
+            logger.info(f"Факт '{fact[:50]}...' добавлен в knowledge_base администратором {added_by}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении факта в knowledge_base: {str(e)}")
         conn.rollback()
@@ -393,12 +398,17 @@ def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
 # Улучшенный поиск фактов (топ-5 релевантных)
 def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> List[str]:
     query_lower = query.lower().strip()
-    # Ключевые слова и синонимы для тематики ВСКС
+    # Расширенные синонимы для имён и тем
     synonyms = {
         "вскс": ["вскс", "студенческий корпус спасателей", "спасатели"],
         "андреев": ["андреев", "алексей евгеньевич"],
         "гуманитарные миссии": ["гуманитарные", "миссии", "помощь"],
-        # Добавьте больше синонимов по необходимости
+        "павлик": ["павлик", "кристина валентиновна", "кристина павлик", "@kristina_pavlik"],
+        "кристина": ["кристина", "павлик", "павлик кристина", "@kristina_pavlik"],
+        "козеев": ["козеев", "евгений викторович"],
+        "багаутдинов": ["багаутдинов", "ахмет айратович", "@baa_msk"],
+        "кременецкая": ["кременецкая", "галина сергеевна", "@ikremenetskaya"],
+        "локтионова": ["локтионова", "дарья петровна", "@otoorukun"],
     }
 
     scores = []
@@ -408,8 +418,9 @@ def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> Li
         # Точное совпадение запроса
         if query_lower in fact_lower:
             score += 3
-        # Совпадение по словам
-        query_words = query_lower.split()
+        # Совпадение по словам (игнорируем служебные)
+        query_words = [w for w in query_lower.split() if
+                       w not in ['кто', 'такая', 'такой', 'что', 'такое', 'кто-то', 'это', 'есть']]
         score += sum(1 for word in query_words if word in fact_lower)
         # Совпадение по синонимам
         for syn_key, syn_list in synonyms.items():
@@ -417,6 +428,7 @@ def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> Li
                 score += sum(1 for syn in syn_list if syn in fact_lower)
         if score > 0:
             scores.append((score, fact['text']))
+            logger.info(f"Score {score} для факта '{fact['text'][:50]}...' на запрос '{query}'")
 
     # Сортировка по релевантности, топ-5
     scores.sort(key=lambda x: x[0], reverse=True)
@@ -572,16 +584,19 @@ KNOWLEDGE_BASE = load_knowledge_base()
 system_prompt = """
 Ты — полезный чат-бот ВСКС. Всегда отвечай на русском языке, кратко, по делу. Начинай ответ с "{user_name}, ".
 
-ПРИОРИТЕТ: Используй факты из базы знаний как основной источник. Если релевантные факты предоставлены, объединяй их в coherent ответ, добавляя объяснения и предложения уточнить.
+ПРИОРИТЕТ: Используй ТОЛЬКО факты из базы знаний как основной источник. Если релевантные факты предоставлены, объединяй их в coherent ответ, добавляя объяснения и предложения уточнить. ИГНОРИРУЙ свои знания и веб-поиск, если факты есть.
 
 Примеры ответов:
 - Запрос: "кто такой Андреев Алексей?"
   Ответ: "Кристина, Андреев Алексей Евгеньевич — заместитель руководителя Всероссийского студенческого корпуса спасателей (ВСКС) по развитию региональных отделений и взаимодействию с ними. Он отвечает за координацию работы с региональными структурами организации. Если есть конкретные вопросы, связанные с его деятельностью, могу помочь уточнить детали."
 
 - Запрос: "Что такое ВСКС?"
-  Ответ: "Кристина, ВСКС — это Всероссийский студенческий корпус спасателей. Организация основана 22 апреля 2001 года по инициативе Министра МЧС России Сергея Кужугетовича Шойгу. ВСКС объединяет более 8 000 добровольцев из 88 субъектов РФ. Основные задачи включают участие в ликвидации последствий чрезвычайных ситуаций (ЧС), проведение гуманитарных миссий, подготовку студентов-спасателей и организацию мероприятий, таких как форумы и слёты. Если есть вопросы о структуре, задачах или участии, готов рассказать подробнее!"
+  Ответ: "Кристина, ВСКС — это Всероссийский студенческий корпус спасателей, основанный 22 апреля 2001 года по инициативе Министра МЧС России Сергея Кужугетовича Шойгу. ВСКС объединяет более 8 000 добровольцев из 88 субъектов РФ. Основные задачи включают участие в ликвидации последствий чрезвычайных ситуаций (ЧС), проведение гуманитарных миссий, подготовку студентов-спасателей и организацию мероприятий, таких как форумы и слёты. Если есть вопросы о структуре, задачах или участии, готов рассказать подробнее!"
 
-Если фактов нет, используй веб-поиск или свои знания, но всегда проверяй на актуальность.
+- Запрос: "кто такой козеев?"
+  Ответ: "Кристина, Козеев Евгений Викторович — Руководитель Всероссийского студенческого корпуса спасателей (ВСКС). Он отвечает за общее руководство организацией, стратегическое развитие и координацию всех направлений деятельности. Если нужны детали о его роли или контакты, уточни!"
+
+Если фактов нет, используй веб-поиск или свои знания, но всегда проверяй на актуальность и указыва, что это не из базы знаний.
 """
 
 # Сохранение истории переписки
@@ -608,11 +623,11 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
         # Если факты найдены: используем их как приоритет
         facts_text = "\n".join(matching_facts)
         fact_prompt = f"""
-Используй ТОЛЬКО эти релевантные факты из базы знаний для ответа на вопрос '{user_input}'.
+СТРОГО используй ТОЛЬКО эти релевантные факты из базы знаний для ответа на вопрос '{user_input}'.
 Факты: {facts_text}
 
 Объедини факты в coherent, информативный ответ. Добавь объяснения, структуру и предложение уточнить. 
-Не добавляй информацию извне.
+ИГНОРИРУЙ свои знания и любую информацию извне, включая веб-поиск. Отвечай ТОЛЬКО на основе фактов выше.
         """
         messages.append({"role": "system", "content": fact_prompt})
         logger.info(f"Генерирую ответ на основе {len(matching_facts)} фактов для user_id {user_id}")
@@ -634,7 +649,8 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
                 if isinstance(results, list):
                     extracted_text = "\n".join(
                         [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results])
-                messages.append({"role": "system", "content": f"Актуальные факты из поиска: {extracted_text}"})
+                messages.append({"role": "system",
+                                 "content": f"Актуальные факты из поиска (используй только если нет фактов из базы): {extracted_text}"})
             except json.JSONDecodeError:
                 pass
 
@@ -772,8 +788,8 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [
         ['Добавить пользователя', 'Добавить администратора'],
         ['Список пользователей', 'Список администраторов'],
-        ['Удалить пользователя', 'Удалить файл'],
-        ['Удалить факт', 'Назад']
+        ['Удалить пользователя', 'Удалить факт'],
+        ['Назад']
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(f"{user_name}, выберите действие:", reply_markup=reply_markup)
@@ -920,376 +936,293 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Сначала пройдите регистрацию с /start.")
         return
 
-    admin_keyboard = [
-        ['Управление пользователями', 'Загрузить файл'],
-        ['Архив документов РО', 'Документы для РО']
-    ] if user_id in ALLOWED_ADMINS else [
-        ['Загрузить файл'],
-        ['Архив документов РО', 'Документы для РО']
-    ]
-    default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
-    context.user_data['default_reply_markup'] = default_reply_markup
+    if context.user_data.get("awaiting_fio", False):
+        USER_PROFILES[user_id] = {"fio": user_input, "name": None, "region": None}
+        save_user_profiles(USER_PROFILES)
+        if user_id not in ALLOWED_USERS:
+            ALLOWED_USERS.append(user_id)
+            save_allowed_users(ALLOWED_USERS)
+        context.user_data["awaiting_fio"] = False
+        context.user_data["awaiting_federal_district"] = True
+        keyboard = [[district] for district in FEDERAL_DISTRICTS.keys()]
+        await update.message.reply_text("Выберите федеральный округ:",
+                                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        return
+
+    if context.user_data.get("awaiting_federal_district", False):
+        if user_input not in FEDERAL_DISTRICTS:
+            await update.message.reply_text(f"{user_name}, выберите округ из списка:", reply_markup=ReplyKeyboardMarkup(
+                [[district] for district in FEDERAL_DISTRICTS.keys()], resize_keyboard=True))
+            return
+        context.user_data["awaiting_federal_district"] = False
+        context.user_data["awaiting_region"] = True
+        context.user_data["selected_district"] = user_input
+        keyboard = [[region] for region in FEDERAL_DISTRICTS[user_input]]
+        await update.message.reply_text("Выберите регион:",
+                                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        return
+
+    if context.user_data.get("awaiting_region", False):
+        selected_district = context.user_data.get("selected_district")
+        if selected_district not in FEDERAL_DISTRICTS or user_input not in FEDERAL_DISTRICTS[selected_district]:
+            await update.message.reply_text(f"{user_name}, выберите регион из списка:",
+                                            reply_markup=ReplyKeyboardMarkup(
+                                                [[region] for region in FEDERAL_DISTRICTS[selected_district]],
+                                                resize_keyboard=True))
+            return
+        USER_PROFILES[user_id]["region"] = user_input
+        save_user_profiles(USER_PROFILES)
+        context.user_data["awaiting_region"] = False
+        context.user_data["awaiting_name"] = True
+        await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
+                                        reply_markup=ReplyKeyboardRemove())
+        return
+
+    if context.user_data.get("awaiting_name", False):
+        USER_PROFILES[user_id]["name"] = user_input
+        save_user_profiles(USER_PROFILES)
+        context.user_data["awaiting_name"] = False
+        await show_main_menu(update, context)
+        return
+
+    if context.user_data.get("awaiting_user_id", False):
+        try:
+            new_user_id = int(user_input)
+            ALLOWED_USERS.append(new_user_id)
+            save_allowed_users(ALLOWED_USERS)
+            context.user_data["awaiting_user_id"] = False
+            await update.message.reply_text(f"{user_name}, пользователь с ID {new_user_id} добавлен.",
+                                            reply_markup=context.user_data.get('default_reply_markup',
+                                                                               ReplyKeyboardRemove()))
+            await show_admin_menu(update, context)
+        except ValueError:
+            await update.message.reply_text(f"{user_name}, введите корректный ID пользователя (число):",
+                                            reply_markup=ReplyKeyboardRemove())
+        return
+
+    if context.user_data.get("awaiting_admin_id", False):
+        try:
+            new_admin_id = int(user_input)
+            ALLOWED_ADMINS.append(new_admin_id)
+            save_allowed_admins(ALLOWED_ADMINS)
+            context.user_data["awaiting_admin_id"] = False
+            await update.message.reply_text(f"{user_name}, администратор с ID {new_admin_id} добавлен.",
+                                            reply_markup=context.user_data.get('default_reply_markup',
+                                                                               ReplyKeyboardRemove()))
+            await show_admin_menu(update, context)
+        except ValueError:
+            await update.message.reply_text(f"{user_name}, введите корректный ID администратора (число):",
+                                            reply_markup=ReplyKeyboardRemove())
+        return
+
+    if context.user_data.get("awaiting_delete_user_id", False):
+        try:
+            user_id_to_delete = int(user_input)
+            if delete_allowed_user(user_id_to_delete, user_id):
+                await update.message.reply_text(f"{user_name}, пользователь с ID {user_id_to_delete} удалён.",
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
+            else:
+                await update.message.reply_text(f"{user_name}, пользователь с ID {user_id_to_delete} не найден.",
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
+            context.user_data["awaiting_delete_user_id"] = False
+            await show_admin_menu(update, context)
+        except ValueError:
+            await update.message.reply_text(f"{user_name}, введите корректный ID пользователя (число):",
+                                            reply_markup=ReplyKeyboardRemove())
+        return
 
     if context.user_data.get("awaiting_fact_id", False):
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут удалять факты.",
-                                            reply_markup=default_reply_markup)
-            context.user_data.pop("awaiting_fact_id", None)
-            return
-        if user_input == "Назад":
-            context.user_data.pop("awaiting_fact_id", None)
-            await show_main_menu(update, context)
+        if user_input.lower() == "назад":
+            context.user_data["awaiting_fact_id"] = False
+            await show_admin_menu(update, context)
             return
         try:
             fact_id = int(user_input)
             if delete_knowledge_fact(fact_id, user_id):
                 KNOWLEDGE_BASE = load_knowledge_base()
                 await update.message.reply_text(f"{user_name}, факт с ID {fact_id} удалён.",
-                                                reply_markup=default_reply_markup)
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
             else:
                 await update.message.reply_text(f"{user_name}, факт с ID {fact_id} не найден.",
-                                                reply_markup=default_reply_markup)
-            context.user_data.pop("awaiting_fact_id", None)
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
+            context.user_data["awaiting_fact_id"] = False
+            await show_admin_menu(update, context)
         except ValueError:
-            await update.message.reply_text(f"{user_name}, введите корректный ID факта (число).",
+            await update.message.reply_text(f"{user_name}, введите корректный ID факта (число):",
                                             reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
         return
 
-    if context.user_data.get("awaiting_user_id", False):
-        try:
-            new_user_id = int(user_input)
-            if new_user_id in ALLOWED_USERS:
-                await update.message.reply_text(f"{user_name}, пользователь с ID {new_user_id} уже существует.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            else:
-                ALLOWED_USERS.append(new_user_id)
-                save_allowed_users(ALLOWED_USERS)
-                await update.message.reply_text(f"{user_name}, пользователь с ID {new_user_id} успешно добавлен.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-                logger.info(f"Пользователь {new_user_id} добавлен администратором {user_id}")
-            context.user_data.pop("awaiting_user_id", None)
+    if user_input.lower() == "назад":
+        if context.user_data.get('current_path') and context.user_data.get('current_path') != '/documents/':
+            current_path = context.user_data.get('current_path', '/documents/')
+            parent_path = '/'.join(current_path.rstrip('/').split('/')[:-1]) or '/documents/'
+            context.user_data['current_path'] = parent_path
+            await show_current_docs(update, context, is_return=True)
             return
-        except ValueError:
-            await update.message.reply_text(f"{user_name}, пожалуйста, введите корректный user_id (число).",
-                                            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            return
-
-    if context.user_data.get("awaiting_admin_id", False):
-        try:
-            new_admin_id = int(user_input)
-            if new_admin_id in ALLOWED_ADMINS:
-                await update.message.reply_text(f"{user_name}, администратор с ID {new_admin_id} уже существует.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            else:
-                ALLOWED_ADMINS.append(new_admin_id)
-                save_allowed_admins(ALLOWED_ADMINS)
-                await update.message.reply_text(f"{user_name}, администратор с ID {new_admin_id} успешно добавлен.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-                logger.info(f"Администратор {new_admin_id} добавлен администратором {user_id}")
-            context.user_data.pop("awaiting_admin_id", None)
-            return
-        except ValueError:
-            await update.message.reply_text(f"{user_name}, пожалуйста, введите корректный admin_id (число).",
-                                            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            return
-
-    if context.user_data.get("awaiting_delete_user_id", False):
-        try:
-            user_id_to_delete = int(user_input)
-            if user_id_to_delete == user_id:
-                await update.message.reply_text(f"{user_name}, вы не можете удалить самого себя.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            elif user_id_to_delete in ALLOWED_ADMINS:
-                await update.message.reply_text(f"{user_name}, вы не можете удалить администратора через эту функцию.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            elif delete_allowed_user(user_id_to_delete, user_id):
-                ALLOWED_USERS.remove(user_id_to_delete)
-                if user_id_to_delete in USER_PROFILES:
-                    del USER_PROFILES[user_id_to_delete]
-                    save_user_profiles(USER_PROFILES)
-                await update.message.reply_text(f"{user_name}, пользователь с ID {user_id_to_delete} успешно удалён.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-                logger.info(f"Пользователь {user_id_to_delete} удалён администратором {user_id}")
-            else:
-                await update.message.reply_text(f"{user_name}, пользователь с ID {user_id_to_delete} не найден.",
-                                                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            context.user_data.pop("awaiting_delete_user_id", None)
-            return
-        except ValueError:
-            await update.message.reply_text(f"{user_name}, пожалуйста, введите корректный user_id (число).",
-                                            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-            return
-
-    if context.user_data.get("awaiting_federal_district", False):
-        if user_input in FEDERAL_DISTRICTS:
-            context.user_data["selected_federal_district"] = user_input
-            context.user_data["awaiting_federal_district"] = False
-            context.user_data["awaiting_region"] = True
-            regions = FEDERAL_DISTRICTS[user_input]
-            keyboard = [[region] for region in regions]
-            await update.message.reply_text("Выберите регион:",
-                                            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-            return
-        await update.message.reply_text("Выберите из предложенных округов.", reply_markup=ReplyKeyboardMarkup(
-            [[district] for district in FEDERAL_DISTRICTS.keys()]))
-        return
-
-    if context.user_data.get("awaiting_region", False):
-        selected_district = context.user_data.get("selected_federal_district")
-        regions = FEDERAL_DISTRICTS.get(selected_district, [])
-        if user_input in regions:
-            USER_PROFILES[user_id]["region"] = user_input
-            save_user_profiles(USER_PROFILES)
-            region_folder = f"/regions/{user_input}/"
-            create_yandex_folder(region_folder)
-            context.user_data.pop("awaiting_region", None)
-            context.user_data.pop("selected_federal_district", None)
-            context.user_data["awaiting_name"] = True
-            await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
-                                            reply_markup=ReplyKeyboardRemove())
-            return
-        await update.message.reply_text("Выберите из предложенных регионов.",
-                                        reply_markup=ReplyKeyboardMarkup([[region] for region in regions]))
-        return
-
-    if context.user_data.get("awaiting_name", False):
-        USER_PROFILES[user_id]["name"] = user_input.strip()
-        save_user_profiles(USER_PROFILES)
-        context.user_data["awaiting_name"] = False
-        user_name = user_input.strip()
         await show_main_menu(update, context)
-        await update.message.reply_text(f"{user_name}, рад знакомству! Задавайте вопросы или используйте меню.",
-                                        reply_markup=default_reply_markup)
         return
 
-    handled = False
-    if user_input == "Загрузить файл":
-        context.user_data["awaiting_upload"] = True
-        await update.message.reply_text(
-            f"{user_name}, отправьте файл (поддерживаются .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg).",
-            reply_markup=ReplyKeyboardMarkup([['Отмена']], resize_keyboard=True))
-        handled = True
+    if user_input.lower() == "в главное меню":
+        await show_main_menu(update, context)
+        return
 
-    elif user_input == "Документы для РО":
-        context.user_data['current_mode'] = 'documents_nav'
-        context.user_data['current_path'] = '/documents/'
-        context.user_data.pop('file_list', None)
-        context.user_data.pop('awaiting_upload', None)
-        create_yandex_folder('/documents/')
-        await show_current_docs(update, context)
-        handled = True
-
-    elif user_input == "Архив документов РО":
-        context.user_data.pop('current_mode', None)
-        context.user_data.pop('current_path', None)
-        context.user_data.pop('file_list', None)
-        context.user_data.pop('awaiting_upload', None)
-        await show_file_list(update, context)
-        handled = True
-
-    elif user_input == "Управление пользователями":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут управлять пользователями.",
-                                            reply_markup=default_reply_markup)
-            return
-        context.user_data.pop('awaiting_upload', None)
+    if user_input == "Управление пользователями" and user_id in ALLOWED_ADMINS:
         await show_admin_menu(update, context)
-        handled = True
+        return
 
-    elif user_input == "Добавить пользователя":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут добавлять пользователей.",
-                                            reply_markup=default_reply_markup)
-            return
+    if user_input == "Добавить пользователя" and user_id in ALLOWED_ADMINS:
         context.user_data["awaiting_user_id"] = True
-        context.user_data.pop('awaiting_upload', None)
-        await update.message.reply_text(f"{user_name}, введите user_id нового пользователя (число):",
-                                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
+        await update.message.reply_text(f"{user_name}, введите ID пользователя для добавления:",
+                                        reply_markup=ReplyKeyboardRemove())
+        return
 
-    elif user_input == "Добавить администратора":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут добавлять администраторов.",
-                                            reply_markup=default_reply_markup)
-            return
+    if user_input == "Добавить администратора" and user_id in ALLOWED_ADMINS:
         context.user_data["awaiting_admin_id"] = True
-        context.user_data.pop('awaiting_upload', None)
-        await update.message.reply_text(f"{user_name}, введите user_id нового администратора (число):",
-                                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
+        await update.message.reply_text(f"{user_name}, введите ID администратора для добавления:",
+                                        reply_markup=ReplyKeyboardRemove())
+        return
 
-    elif user_input == "Список пользователей":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(
-                f"{user_name}, только администраторы могут просматривать список пользователей.",
-                reply_markup=default_reply_markup)
-            return
-        context.user_data.pop('awaiting_upload', None)
+    if user_input == "Список пользователей" and user_id in ALLOWED_ADMINS:
         users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS]) or "Список пользователей пуст."
         await update.message.reply_text(f"{user_name}, список пользователей:\n{users_list}",
-                                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                           ReplyKeyboardRemove()))
+        return
 
-    elif user_input == "Список администраторов":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(
-                f"{user_name}, только администраторы могут просматривать список администраторов.",
-                reply_markup=default_reply_markup)
-            return
-        context.user_data.pop('awaiting_upload', None)
+    if user_input == "Список администраторов" and user_id in ALLOWED_ADMINS:
         admins_list = "\n".join([f"ID: {aid}" for aid in ALLOWED_ADMINS]) or "Список администраторов пуст."
         await update.message.reply_text(f"{user_name}, список администраторов:\n{admins_list}",
-                                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                           ReplyKeyboardRemove()))
+        return
 
-    elif user_input == "Удалить пользователя":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут удалять пользователей.",
-                                            reply_markup=default_reply_markup)
-            return
+    if user_input == "Удалить пользователя" and user_id in ALLOWED_ADMINS:
         context.user_data["awaiting_delete_user_id"] = True
-        context.user_data.pop('awaiting_upload', None)
         users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS]) or "Список пользователей пуст."
-        await update.message.reply_text(
-            f"{user_name}, выберите ID пользователя для удаления:\n{users_list}\n\nВведите ID:",
-            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        handled = True
+        await update.message.reply_text(f"{user_name}, введите ID пользователя для удаления:\n{users_list}",
+                                        reply_markup=ReplyKeyboardRemove())
+        return
 
-    elif user_input == "Удалить факт":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text(f"{user_name}, только администраторы могут удалять факты.",
-                                            reply_markup=default_reply_markup)
+    if user_input == "Архив документов РО":
+        context.user_data['current_path'] = '/documents/'
+        context.user_data['current_mode'] = 'docs'
+        await show_current_docs(update, context)
+        return
+
+    if user_input == "Документы для РО":
+        profile = USER_PROFILES.get(user_id)
+        if not profile or not profile.get('region'):
+            await update.message.reply_text(f"{user_name}, ваш регион не указан. Пройдите регистрацию заново с /start.",
+                                            reply_markup=ReplyKeyboardRemove())
             return
-        context.user_data.pop('awaiting_upload', None)
-        await delete_fact(update, context)
-        handled = True
+        current_path = f"/regions/{profile['region']}/"
+        context.user_data['current_path'] = current_path
+        context.user_data['current_mode'] = 'region_docs'
+        if not create_yandex_folder(current_path):
+            await update.message.reply_text(f"{user_name}, ошибка при доступе к папке региона. Проверьте YANDEX_TOKEN.",
+                                            reply_markup=context.user_data.get('default_reply_markup',
+                                                                               ReplyKeyboardRemove()))
+            return
+        files = list_yandex_disk_files(current_path)
+        if files:
+            context.user_data['file_list'] = files
+            file_keyboard = [[InlineKeyboardButton(item['name'], callback_data=f"download:{idx}")] for idx, item in
+                             enumerate(files)]
+            file_reply_markup = InlineKeyboardMarkup(file_keyboard)
+            await update.message.reply_text(f"{user_name}, файлы в папке региона {profile['region']}:",
+                                            reply_markup=file_reply_markup)
+        else:
+            await update.message.reply_text(f"{user_name}, в папке региона {profile['region']} нет файлов.",
+                                            reply_markup=context.user_data.get('default_reply_markup',
+                                                                               ReplyKeyboardRemove()))
+        return
 
-    elif user_input == "Назад":
-        context.user_data.pop('awaiting_upload', None)
-        context.user_data.pop('awaiting_fact_id', None)
-        context.user_data.pop('awaiting_delete_user_id', None)
-        await show_main_menu(update, context)
-        handled = True
+    if user_input == "Загрузить файл":
+        profile = USER_PROFILES.get(user_id)
+        if not profile or not profile.get('region'):
+            await update.message.reply_text(f"{user_name}, ваш регион не указан. Пройдите регистрацию заново с /start.",
+                                            reply_markup=ReplyKeyboardRemove())
+            return
+        context.user_data['awaiting_upload'] = True
+        await update.message.reply_text(
+            f"{user_name}, отправьте файл для загрузки в папку региона {profile['region']}.",
+            reply_markup=ReplyKeyboardRemove())
+        return
 
-    elif user_input == "Отмена":
-        context.user_data.pop('awaiting_upload', None)
-        await show_main_menu(update, context)
-        handled = True
-
-    if context.user_data.get('current_mode') == 'documents_nav':
+    if context.user_data.get('current_mode') in ['docs', 'region_docs']:
         current_path = context.user_data.get('current_path', '/documents/')
         dirs = list_yandex_disk_directories(current_path)
-        dirs_lower = [d.lower() for d in dirs]
-        user_input_lower = user_input.lower()
-        if user_input_lower in dirs_lower:
-            original_dir = next(d for d in dirs if d.lower() == user_input_lower)
-            context.user_data['current_path'] = f"{current_path.rstrip('/')}/{original_dir}/"
-            create_yandex_folder(context.user_data['current_path'])
+        if user_input in dirs:
+            context.user_data['current_path'] = f"{current_path.rstrip('/')}/{user_input}/"
             await show_current_docs(update, context)
-            handled = True
-        elif user_input == 'В главное меню':
-            context.user_data.pop('awaiting_upload', None)
-            await show_main_menu(update, context)
-            handled = True
-        elif user_input == 'Назад' and current_path != '/documents/':
-            parts = current_path.rstrip('/').split('/')
-            context.user_data['current_path'] = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
-            await show_current_docs(update, context, is_return=True)
-            handled = True
+            return
 
-    # Если сообщение не было обработано как специальная команда или состояние, обрабатываем как запрос к AI
-    if not handled:
-        logger.info(f"Обрабатываю запрос для user_id {user_id}: {user_input}")
-        ai_response = await generate_ai_response(user_id, user_input, user_name, chat_id)
-        final_response = f"{ai_response}"
-        await update.message.reply_text(final_response, reply_markup=default_reply_markup)
-        log_request(user_id, user_input, final_response)
+    if update.message.document:
+        if context.user_data.get('awaiting_upload', False):
+            profile = USER_PROFILES.get(user_id)
+            if not profile or not profile.get('region'):
+                await update.message.reply_text(
+                    f"{user_name}, ваш регион не указан. Пройдите регистрацию заново с /start.",
+                    reply_markup=ReplyKeyboardRemove())
+                return
+            file = await update.message.document.get_file()
+            file_name = update.message.document.file_name
+            if not file_name.lower().endswith(
+                    ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
+                await update.message.reply_text(
+                    f"{user_name}, поддерживаются только файлы: .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.",
+                    reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+                return
+            file_response = requests.get(file.file_path)
+            if file_response.status_code != 200:
+                await update.message.reply_text(f"{user_name}, ошибка при загрузке файла.",
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
+                return
+            file_size = len(file_response.content) / (1024 * 1024)
+            if file_size > 20:
+                await update.message.reply_text(f"{user_name}, файл слишком большой (>20 МБ).",
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
+                return
+            folder_path = f"/regions/{profile['region']}/"
+            if not create_yandex_folder(folder_path):
+                await update.message.reply_text(
+                    f"{user_name}, ошибка при создании папки региона. Проверьте YANDEX_TOKEN.",
+                    reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+                return
+            if upload_to_yandex_disk(file_response.content, file_name, folder_path):
+                await update.message.reply_text(
+                    f"{user_name}, файл {file_name} успешно загружен в папку региона {profile['region']}.",
+                    reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+            else:
+                await update.message.reply_text(f"{user_name}, ошибка при загрузке файла.",
+                                                reply_markup=context.user_data.get('default_reply_markup',
+                                                                                   ReplyKeyboardRemove()))
+            context.user_data['awaiting_upload'] = False
+            return
 
-
-# Обработка загруженных документов
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id: int = update.effective_user.id
-    user_name = get_user_name(user_id)
-    if not context.user_data.get('awaiting_upload', False):
-        await update.message.reply_text(f"{user_name}, используйте кнопку 'Загрузить файл' перед отправкой документа.")
-        return
-    document = update.message.document
-    file_name = document.file_name
-    if not file_name.lower().endswith(
-            ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
-        await update.message.reply_text(
-            f"{user_name}, поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.")
-        context.user_data.pop('awaiting_upload', None)
-        return
-    file_size = document.file_size / (1024 * 1024)
-    if file_size > 50:
-        await update.message.reply_text(f"{user_name}, файл слишком большой (>50 МБ).")
-        context.user_data.pop('awaiting_upload', None)
-        return
-    profile = USER_PROFILES.get(user_id)
-    if not profile or "region" not in profile:
-        await update.message.reply_text(f"{user_name}, ошибка: регион не определён.")
-        context.user_data.pop('awaiting_upload', None)
-        return
-    region_folder = f"/regions/{profile['region']}/"
-    create_yandex_folder(region_folder)
-    try:
-        file = await context.bot.get_file(document.file_id)
-        file_content = await file.download_as_bytearray()
-        if upload_to_yandex_disk(file_content, file_name, region_folder):
-            await update.message.reply_text(f"{user_name}, файл успешно загружен в папку {region_folder}")
-            logger.info(f"Файл {file_name} загружен пользователем {user_id} в {region_folder}")
-        else:
-            await update.message.reply_text(f"{user_name}, ошибка при загрузке файла. Проверьте YANDEX_TOKEN.")
-            logger.error(f"Ошибка загрузки файла {file_name} в {region_folder} для user_id {user_id}")
-    except Exception as e:
-        await update.message.reply_text(f"{user_name}, ошибка: {str(e)}. Проверьте YANDEX_TOKEN.")
-        logger.error(f"Ошибка обработки документа {file_name}: {str(e)}")
-    context.user_data.pop('awaiting_upload', None)
-    await show_main_menu(update, context)
+    ai_response = await generate_ai_response(user_id, user_input, user_name, chat_id)
+    await update.message.reply_text(ai_response,
+                                    reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+    log_request(user_id, user_input, ai_response)
 
 
-# Отображение списка файлов
-async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
-    user_id: int = update.effective_user.id
-    user_name = get_user_name(user_id)
-    profile = USER_PROFILES.get(user_id)
-    if not profile or "region" not in profile:
-        await update.message.reply_text(f"{user_name}, ошибка: регион не определён.",
-                                        reply_markup=context.user_data.get('default_reply_markup',
-                                                                           ReplyKeyboardRemove()))
-        return
-    region_folder = f"/regions/{profile['region']}/"
-    create_yandex_folder(region_folder)
-    files = list_yandex_disk_files(region_folder)
-    if not files:
-        await update.message.reply_text(f"{user_name}, в папке {region_folder} нет файлов.",
-                                        reply_markup=context.user_data.get('default_reply_markup',
-                                                                           ReplyKeyboardRemove()))
-        return
-    context.user_data['file_list'] = files
-    context.user_data['current_path'] = region_folder
-    keyboard = [[InlineKeyboardButton(item['name'], callback_data=f"{'delete' if for_deletion else 'download'}:{idx}")]
-                for idx, item in enumerate(files)]
-    await update.message.reply_text(
-        f"{user_name}, выберите файл для удаления:" if for_deletion else f"{user_name}, список всех файлов:",
-        reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-# Основная функция
+# Инициализация бота
 def main():
-    try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler("start", send_welcome))
-        app.add_handler(CommandHandler("add_fact", add_fact))
-        app.add_handler(CommandHandler("delete_fact", delete_fact))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(CallbackQueryHandler(handle_callback_query))
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-    except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {str(e)}")
-        raise
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", send_welcome))
+    app.add_handler(CommandHandler("add_fact", add_fact))
+    app.add_handler(CommandHandler("delete_fact", delete_fact))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
+    logger.info("Бот запущен")
+    app.run_polling()
 
 
 if __name__ == '__main__':
