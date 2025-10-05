@@ -503,10 +503,9 @@ KNOWLEDGE_BASE = load_knowledge_base()
 # Системный промпт для ИИ
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
-Обязательно используй актуальные данные из поиска в истории сообщений для ответов на вопросы о фактах, организациях или событиях.
-Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко.
-Если данных нет, используй свои знания и базу знаний, предоставленную системой.
-Не упоминай процесс поиска, источники или фразы вроде "не знаю" или "уточните".
+Ваша главная задача — отвечать, используя предоставленные факты из базы знаний, которые являются приоритетным источником информации.
+Если в базе знаний есть подходящий факт, отвечайте только на основе него, без обращения к другим источникам.
+Если подходящего факта нет, используйте результаты веб-поиска (если они доступны) или свои знания, но только после проверки базы знаний.
 Всегда учитывай полный контекст разговора.
 Отвечай кратко, по делу, на русском языке, без лишних объяснений.
 """
@@ -524,12 +523,12 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if user_id not in USER_PROFILES:
         context.user_data["awaiting_fio"] = True
-        await update.message.reply_text(f"{user_name}, напишите своё ФИО.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Пожалуйста, напишите своё ФИО.", reply_markup=ReplyKeyboardRemove())
         return
     profile = USER_PROFILES[user_id]
     if profile.get("name") is None:
         context.user_data["awaiting_name"] = True
-        await update.message.reply_text(f"{user_name}, как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
+        await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
                                         reply_markup=ReplyKeyboardRemove())
     else:
         await show_main_menu(update, context)
@@ -718,6 +717,16 @@ def log_request(user_id: int, request: str, response: str) -> None:
         logger.error(f"Ошибка при логировании запроса: {str(e)}")
         conn.rollback()
 
+# Поиск фактов в базе знаний
+def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> List[str]:
+    query_lower = query.lower().strip()
+    matching_facts = []
+    for fact in knowledge_base:
+        fact_text_lower = fact['text'].lower()
+        if query_lower in fact_text_lower or any(word in fact_text_lower for word in query_lower.split()):
+            matching_facts.append(fact['text'])
+    return matching_facts
+
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global KNOWLEDGE_BASE, ALLOWED_USERS
@@ -742,10 +751,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["awaiting_fio"] = False
             context.user_data["awaiting_federal_district"] = True
             keyboard = [[district] for district in FEDERAL_DISTRICTS.keys()]
-            await update.message.reply_text(f"{user_name}, выберите федеральный округ:",
+            await update.message.reply_text("Выберите федеральный округ:",
                                             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
             return
-        await update.message.reply_text(f"{user_name}, сначала пройдите регистрацию с /start.")
+        await update.message.reply_text("Сначала пройдите регистрацию с /start.")
         return
 
     admin_keyboard = [
@@ -871,7 +880,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data.pop("awaiting_region", None)
             context.user_data.pop("selected_federal_district", None)
             context.user_data["awaiting_name"] = True
-            await update.message.reply_text(f"{user_name}, как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
+            await update.message.reply_text("Как я могу к вам обращаться? Укажите краткое имя (например, Кристина).",
                                             reply_markup=ReplyKeyboardRemove())
             return
         await update.message.reply_text(f"{user_name}, выберите из предложенных регионов.",
@@ -1018,19 +1027,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Если сообщение не было обработано как специальная команда или состояние, обрабатываем как запрос к AI
     if not handled:
-        logger.info(f"Обрабатываю AI-запрос для user_id {user_id}: {user_input}")
-        logger.info(f"История сообщений для chat_id {chat_id}: {histories.get(chat_id, {})}")
+        logger.info(f"Обрабатываю запрос для user_id {user_id}: {user_input}")
         if not KNOWLEDGE_BASE:
             logger.warning("База знаний пуста или не загружена")
             KNOWLEDGE_BASE = load_knowledge_base()
         logger.info(f"База знаний содержит {len(KNOWLEDGE_BASE)} фактов")
-        # Обработка текстового сообщения через API
-        if chat_id not in histories:
-            histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-        # Добавляем базу знаний в контекст для всех пользователей
+        # Проверка базы знаний
+        matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
+        if matching_facts:
+            response = "\n".join(matching_facts)
+            final_response = f"{user_name}, {response}"
+            await update.message.reply_text(final_response, reply_markup=default_reply_markup)
+            log_request(user_id, user_input, final_response)
+            logger.info(f"Ответ из базы знаний для user_id {user_id}: {response}")
+            return
+
+        # Инициализация истории сообщений
+        if chat_id not in histories:
+            histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_prompt}]}
+
+        # Добавляем базу знаний в контекст
         if KNOWLEDGE_BASE:
-            knowledge_text = "Известные факты для использования в ответах: " + "; ".join([fact['text'] for fact in KNOWLEDGE_BASE])
+            knowledge_text = "Факты из базы знаний (используй их как приоритетный источник): " + "; ".join([fact['text'] for fact in KNOWLEDGE_BASE])
             histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
             logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
 
@@ -1050,13 +1069,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         [f"Источник: {r.get('title', '')}\n{r.get('body', '')}" for r in results if r.get('body')])
                 else:
                     extracted_text = search_results_json
-                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты: {extracted_text}"})
+                histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные факты из поиска: {extracted_text}"})
                 logger.info(f"Извлечено из поиска: {extracted_text[:200]}...")
             except json.JSONDecodeError:
                 histories[chat_id]["messages"].append(
                     {"role": "system", "content": f"Ошибка поиска: {search_results_json}"})
-        else:
-            logger.info(f"Веб-поиск не требуется для запроса: {user_input}")
 
         histories[chat_id]["messages"].append({"role": "user", "content": user_input})
         if len(histories[chat_id]["messages"]) > 20:
@@ -1173,7 +1190,6 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
                                     reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Основная функция
-#comit
 def main():
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
