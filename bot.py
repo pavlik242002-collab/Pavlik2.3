@@ -18,7 +18,11 @@ from nltk.tokenize import word_tokenize
 import re
 
 # Загрузка данных NLTK
-nltk.download('punkt')
+nltk.data.path.append(os.path.join(os.path.dirname(__file__), 'nltk_data'))
+try:
+    nltk.download('punkt', download_dir=os.path.join(os.path.dirname(__file__), 'nltk_data'))
+except Exception as e:
+    logger.error(f"Ошибка при загрузке данных NLTK: {str(e)}")
 
 # Настройка логирования
 logging.basicConfig(
@@ -58,10 +62,15 @@ client = OpenAI(
     api_key=XAI_TOKEN,
 )
 
+# Глобальный словарь для хранения истории чатов
+histories: Dict[int, Dict[str, Any]] = {}
+
+
 # Инициализация таблиц в PostgreSQL
 def init_db(conn):
     try:
         with conn.cursor() as cur:
+            # Проверка и создание таблицы allowed_admins
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -79,6 +88,7 @@ def init_db(conn):
             else:
                 logger.info("Таблица allowed_admins уже существует.")
 
+            # Проверка и создание таблицы allowed_users
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -95,6 +105,7 @@ def init_db(conn):
             else:
                 logger.info("Таблица allowed_users уже существует.")
 
+            # Проверка и создание таблицы user_profiles
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -114,6 +125,7 @@ def init_db(conn):
             else:
                 logger.info("Таблица user_profiles уже существует.")
 
+            # Проверка и создание таблицы request_logs
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -134,13 +146,42 @@ def init_db(conn):
             else:
                 logger.info("Таблица request_logs уже существует.")
 
+            # Проверка и исправление таблицы knowledge_base
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'knowledge_base'
                 );
             """)
-            if not cur.fetchone()[0]:
+            table_exists = cur.fetchone()[0]
+
+            # Проверяем наличие столбца fact_text
+            if table_exists:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.columns 
+                        WHERE table_name = 'knowledge_base' AND column_name = 'fact_text'
+                    );
+                """)
+                if not cur.fetchone()[0]:
+                    logger.warning("Столбец fact_text отсутствует в таблице knowledge_base. Пересоздаем таблицу.")
+                    # Сохраняем данные, если есть столбец text
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.columns 
+                            WHERE table_name = 'knowledge_base' AND column_name = 'text'
+                        );
+                    """)
+                    if cur.fetchone()[0]:
+                        cur.execute("ALTER TABLE knowledge_base RENAME COLUMN text TO fact_text;")
+                        logger.info("Столбец text переименован в fact_text.")
+                    else:
+                        # Если структура совсем неверная, пересоздаем таблицу
+                        cur.execute("DROP TABLE knowledge_base;")
+                        table_exists = False
+                        logger.info("Таблица knowledge_base удалена из-за неверной структуры.")
+
+            if not table_exists:
                 cur.execute("""
                     CREATE TABLE knowledge_base (
                         id SERIAL PRIMARY KEY,
@@ -153,23 +194,37 @@ def init_db(conn):
                     ("Привет! Чем могу помочь?", 6909708460),
                     ("Документы по награждениям находятся в папке /documents/Награждения.", 6909708460),
                     ("Всё отлично, спасибо за вопрос!", 6909708460),
-                    ("ВСКС - Всероссийский студенческий корпус спасателей, основанный 22 апреля 2001 года. Организация объединяет свыше 8 000 добровольцев из 88 субъектов России, которые участвуют в ликвидации последствий чрезвычайных ситуаций, таких как пожары и наводнения, а также проводят гуманитарные миссии.", 6909708460),
+                    ("ВСКС - Всероссийский студенческий корпус спасателей, основанный 22 апреля 2001 года. Организация объединяет свыше 8 000 добровольцев из 88 субъектов России, которые участвуют в ликвидации последствий чрезвычайных ситуаций, таких как пожары и наводнения, а также проводят гуманитарные миссии.",
+                     6909708460),
                     ("Козеев Евгений Викторович - Руководитель ВСКС", 6909708460),
-                    ("Гуманитарные миссии - Всероссийский студенческий корпус спасателей (ВСКС) проводит гуманитарные миссии по нескольким направлениям: Ростовская область, Курская область, Запорожская область, Херсонская область, Донецкая Народная Республика, Луганская Народная Республика. Гуманитарные миссии проводятся 2 раза в месяц, каждые 1-15 и 15-30 числа месяца. Условия: проживание, питание и проезд за счёт ВСКС и партнёров. Заявки для участия можно подать через @kristina_pavlik.", 6909708460),
-                    ("ЧС в которых ВСКС принимал участие - Добровольцы ВСКС приняли участие в ликвидации свыше 50 крупных чрезвычайных ситуаций и их последствий. Студенты-спасатели участвовали в ликвидации последствий лесных пожаров в Центральном федеральном округе, Тюменской области, Красноярском и Забайкальском краях; наводнений в Иркутской, Оренбургской, Курганской областях, Краснодарском и Алтайском краях, на Дальнем Востоке, в Республике Крым; степных пожаров в Забайкальском крае, ликвидации последствий разлива нефтепродуктов в Чёрное море и других ЧS. Добровольцы также помогают в ликвидации ЧС и их последствий на региональном уровне.", 6909708460),
+                    ("Гуманитарные миссии - Всероссийский студенческий корпус спасателей (ВСКС) проводит гуманитарные миссии по нескольким направлениям: Ростовская область, Курская область, Запорожская область, Херсонская область, Донецкая Народная Республика, Луганская Народная Республика. Гуманитарные миссии проводятся 2 раза в месяц, каждые 1-15 и 15-30 числа месяца. Условия: проживание, питание и проезд за счёт ВСКС и партнёров. Заявки для участия можно подать через @kristina_pavlik.",
+                     6909708460),
+                    ("ЧС в которых ВСКС принимал участие - Добровольцы ВСКС приняли участие в ликвидации свыше 50 крупных чрезвычайных ситуаций и их последствий. Студенты-спасатели участвовали в ликвидации последствий лесных пожаров в Центральном федеральном округе, Тюменской области, Красноярском и Забайкальском краях; наводнений в Иркутской, Оренбургской, Курганской областях, Краснодарском и Алтайском краях, на Дальнем Востоке, в Республике Крым; степных пожаров в Забайкальском крае, ликвидации последствий разлива нефтепродуктов в Чёрное море и других ЧС. Добровольцы также помогают в ликвидации ЧС и их последствий на региональном уровне.",
+                     6909708460),
                     ("В ВСКС - Свыше 8 000 добровольцев из 88 субъектов Российской Федерации.", 6909708460),
-                    ("ВСКС основан - 22 апреля 2001 года по инициативе министра МЧС России того времени Сергея Кужугетовича Шойгу.", 6909708460),
-                    ("Багаутдинов Ахмет Айратович - Начальник отдела регионального взаимодействия ЦУ ВСКС, координирует работу отдела, контакт: @baa_msk.", 6909708460),
-                    ("Павлик Кристина Валентиновна - Заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается набором добровольцев на гуманитарные миссии ВСКС и ликвидации последствий ЧС, контакт: @kristina_pavlik.", 6909708460),
-                    ("Кременецкая Галина Сергеевна - Сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается набором добровольцев из региональных отделений ВСКС на обучение по первоначальной подготовке спасателей на базе Всероссийского центра координации, подготовки и переподготовки студенческих добровольных спасательных формирований (ВЦПСФ), контакт: @ikremenetskaya.", 6909708460),
-                    ("Локтионова Дарья Петровна - Сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается обработкой служебных записок региональных отделений ВСКС по выдаче форменной одежды, контакт: @otoorukun.", 6909708460),
+                    ("ВСКС основан - 22 апреля 2001 года по инициативе министра МЧС России того времени Сергея Кужугетовича Шойгу.",
+                     6909708460),
+                    ("Багаутдинов Ахмет Айратович - Начальник отдела регионального взаимодействия ЦУ ВСКС, координирует работу отдела, контакт: @baa_msk.",
+                     6909708460),
+                    ("Павлик Кристина Валентиновна - Заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается набором добровольцев на гуманитарные миссии ВСКС и ликвидации последствий ЧС, контакт: @kristina_pavlik.",
+                     6909708460),
+                    ("Кременецкая Галина Сергеевна - Сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается набором добровольцев из региональных отделений ВСКС на обучение по первоначальной подготовке спасателей на базе Всероссийского центра координации, подготовки и переподготовки студенческих добровольных спасательных формирований (ВЦПСФ), контакт: @ikremenetskaya.",
+                     6909708460),
+                    ("Локтионова Дарья Петровна - Сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается обработкой служебных записок региональных отделений ВСКС по выдаче форменной одежды, контакт: @otoorukun.",
+                     6909708460),
                     ("Форум ВСКС - Всероссийский форум волонтёров безопасности.", 6909708460),
-                    ("Слёт ВСКС - Всероссийский слёт студентов-спасателей и добровольцев в ЧС, V Всероссийский слёт студентов-спасателей и добровольцев в ЧС пройдёт с 30 сентября по 5 октября 2025 года на территории учебно-тренировочного полигона пожарных и спасателей в Московской области.", 6909708460),
-                    ("Андреев Алексей Евгеньевич - Заместитель руководителя ВСКС по развитию региональных отделений ВСКС и взаимодействию с ними.", 6909708460),
-                    ("Исаенко Алена Андреевна - сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается координацией деятельности и развития студенческих спасательных отрядов в региональных отделениях ВСКС, занимается набором добровольцев на ежегодные слет и форум ВСКС, контакт: @al_isaenko.", 6909708460),
-                    ("Барладян Ирина Алексеевна - Заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается подготовкой соглашений по передаче оборудования в региональные отделения ВСКС, также Ирина занимается инвентаризацией оборудования в РО ВСКС, контакт: @Irina_marz.", 6909708460),
-                    ("Задачи участников гуманитарной миссии в Ростовской области - Основные задачи участников гуманитарной миссии в Ростовской области:\n1. Работа в гуманитарном центре:\n✔\uFE0FРазгрузочно-погрузочные работы;\n✔\uFE0FСбор продуктовых и гигиенических наборов.\n\n2. Выезды по Ростовской области:\n✔\uFE0FЛиквидация последствий ЧС;\n✔\uFE0FУчастие в АВР.", 6909708460),
-                    ("Задачи участников гуманитарной миссии в Курской области - Основные задачи участников гуманитарной миссии в Курской области:\n1. Ликвидация последствий ЧС:\n✔\uFE0FРазбор завалов;\n\n2. Оказание адресной помощи жителям Белгородской области:\n✔\uFE0FРазмещение в ПВР;\n✔\uFE0FПеревозка вещей;\n✔\uFE0FАдресная помощь пострадавшим.\n\n3. Проведение мастер-классов для детей из приграничных территорий:\n✔\uFE0FАльпинистская подготовка;\n✔\uFE0FОказание первой помощи;\n✔\uFE0FПожарная безопасность.\n\n4. Работа на складе:\n✔\uFE0FСборка гуманитарных пакетов;\n✔\uFE0FИнвентаризация;\n✔\uFE0FПрием/отправка гуманитарной помощи.", 6909708460)
+                    ("Слёт ВСКС - Всероссийский слёт студентов-спасателей и добровольцев в ЧС, V Всероссийский слёт студентов-спасателей и добровольцев в ЧС пройдёт с 30 сентября по 5 октября 2025 года на территории учебно-тренировочного полигона пожарных и спасателей в Московской области.",
+                     6909708460),
+                    ("Андреев Алексей Евгеньевич - Заместитель руководителя ВСКС по развитию региональных отделений ВСКС и взаимодействию с ними.",
+                     6909708460),
+                    ("Исаенко Алена Андреевна - сотрудник отдела регионального взаимодействия ЦУ ВСКС, занимается координацией деятельности и развития студенческих спасательных отрядов в региональных отделениях ВСКС, занимается набором добровольцев на ежегодные слет и форум ВСКС, контакт: @al_isaenko.",
+                     6909708460),
+                    ("Барладян Ирина Алексеевна - Заместитель начальника отдела регионального взаимодействия ЦУ ВСКС, занимается подготовкой соглашений по передаче оборудования в региональные отделения ВСКС, также Ирина занимается инвентаризацией оборудования в РО ВСКС, контакт: @Irina_marz.",
+                     6909708460),
+                    ("Задачи участников гуманитарной миссии в Ростовской области - Основные задачи участников гуманитарной миссии в Ростовской области:\n1. Работа в гуманитарном центре:\n✔\uFE0FРазгрузочно-погрузочные работы;\n✔\uFE0FСбор продуктовых и гигиенических наборов.\n\n2. Выезды по Ростовской области:\n✔\uFE0FЛиквидация последствий ЧС;\n✔\uFE0FУчастие в АВР.",
+                     6909708460),
+                    ("Задачи участников гуманитарной миссии в Курской области - Основные задачи участников гуманитарной миссии в Курской области:\n1. Ликвидация последствий ЧС:\n✔\uFE0FРазбор завалов;\n\n2. Оказание адресной помощи жителям Белгородской области:\n✔\uFE0FРазмещение в ПВР;\n✔\uFE0FПеревозка вещей;\n✔\uFE0FАдресная помощь пострадавшим.\n\n3. Проведение мастер-классов для детей из приграничных территорий:\n✔\uFE0FАльпинистская подготовка;\n✔\uFE0FОказание первой помощи;\n✔\uFE0FПожарная безопасность.\n\n4. Работа на складе:\n✔\uFE0FСборка гуманитарных пакетов;\n✔\uFE0FИнвентаризация;\n✔\uFE0FПрием/отправка гуманитарной помощи.",
+                     6909708460)
                 ]
                 for fact, admin_id in initial_facts:
                     cur.execute("""
@@ -177,7 +232,7 @@ def init_db(conn):
                     """, (fact, admin_id))
                 logger.info("Таблица knowledge_base создана с начальными фактами.")
             else:
-                logger.info("Таблица knowledge_base уже существует.")
+                logger.info("Таблица knowledge_base уже существует с правильной структурой.")
 
             conn.commit()
             logger.info("Все таблицы проверены и созданы при необходимости.")
@@ -185,6 +240,7 @@ def init_db(conn):
         logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
         conn.rollback()
         raise
+
 
 init_db(conn)
 
@@ -234,6 +290,7 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
+
 # Функции для работы с администраторами
 def load_allowed_admins() -> List[int]:
     try:
@@ -251,6 +308,7 @@ def load_allowed_admins() -> List[int]:
         conn.rollback()
         return [6909708460]
 
+
 def save_allowed_admins(allowed_admins: List[int]) -> None:
     try:
         with conn.cursor() as cur:
@@ -262,6 +320,7 @@ def save_allowed_admins(allowed_admins: List[int]) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении allowed_admins: {str(e)}")
         conn.rollback()
+
 
 # Функции для работы с пользователями
 def load_allowed_users() -> List[int]:
@@ -276,6 +335,7 @@ def load_allowed_users() -> List[int]:
         conn.rollback()
         return []
 
+
 def save_allowed_users(allowed_users: List[int]) -> None:
     try:
         with conn.cursor() as cur:
@@ -288,6 +348,7 @@ def save_allowed_users(allowed_users: List[int]) -> None:
         logger.error(f"Ошибка при сохранении allowed_users: {str(e)}")
         conn.rollback()
 
+
 def delete_allowed_user(user_id_to_delete: int, admin_id: int) -> bool:
     try:
         with conn.cursor() as cur:
@@ -297,12 +358,14 @@ def delete_allowed_user(user_id_to_delete: int, admin_id: int) -> bool:
                 logger.info(f"Пользователь с ID {user_id_to_delete} удален администратором {admin_id}")
                 return True
             else:
-                logger.warning(f"Пользователь с ID {user_id_to_delete} не найден для удаления администратором {admin_id}")
+                logger.warning(
+                    f"Пользователь с ID {user_id_to_delete} не найден для удаления администратором {admin_id}")
                 return False
     except Exception as e:
         logger.error(f"Ошибка при удалении пользователя с ID {user_id_to_delete}: {str(e)}")
         conn.rollback()
         return False
+
 
 # Функции для профилей пользователей
 def load_user_profiles() -> Dict[int, Dict[str, str]]:
@@ -319,6 +382,7 @@ def load_user_profiles() -> Dict[int, Dict[str, str]]:
         conn.rollback()
         return {}
 
+
 def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     try:
         with conn.cursor() as cur:
@@ -333,6 +397,7 @@ def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении user_profiles: {str(e)}")
         conn.rollback()
+
 
 # Функции для работы с базой знаний в Postgres (Railway)
 def load_knowledge_base() -> List[Dict[str, Any]]:
@@ -351,6 +416,7 @@ def load_knowledge_base() -> List[Dict[str, Any]]:
         conn.rollback()
         return []
 
+
 def save_knowledge_fact(fact: str, added_by: int) -> None:
     try:
         with conn.cursor() as cur:
@@ -363,6 +429,7 @@ def save_knowledge_fact(fact: str, added_by: int) -> None:
     except Exception as e:
         logger.error(f"Ошибка при сохранении факта в knowledge_base: {str(e)}")
         conn.rollback()
+
 
 def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
     try:
@@ -380,13 +447,15 @@ def delete_knowledge_fact(fact_id: int, admin_id: int) -> bool:
         conn.rollback()
         return False
 
+
 # Улучшенный поиск фактов
 def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> List[str]:
     query_lower = query.lower().strip()
     # Токенизация запроса
     query_tokens = word_tokenize(query_lower, language='russian')
     # Удаляем служебные слова и нормализуем
-    query_words = [re.sub(r'[^\w\s]', '', w) for w in query_tokens if w not in ['кто', 'такая', 'такой', 'что', 'такое', 'кто-то', 'это', 'есть']]
+    query_words = [re.sub(r'[^\w\s]', '', w) for w in query_tokens if
+                   w not in ['кто', 'такая', 'такой', 'что', 'такое', 'кто-то', 'это', 'есть']]
 
     # Расширенные синонимы для имен и тем
     synonyms = {
@@ -444,6 +513,7 @@ def find_knowledge_facts(query: str, knowledge_base: List[Dict[str, Any]]) -> Li
         f"Найдено {len(matching_facts)} релевантных фактов для '{query}': {[f[:50] + '...' for f in matching_facts]}")
     return matching_facts
 
+
 # Функция для веб-поиска
 def web_search(query: str) -> str:
     cache_file = 'search_cache.json'
@@ -471,6 +541,7 @@ def web_search(query: str) -> str:
     except Exception as e:
         logger.error(f"Ошибка при поиске: {str(e)}")
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
+
 
 # Функции для работы с Яндекс.Диском
 def create_yandex_folder(folder_path: str) -> bool:
@@ -501,6 +572,7 @@ def create_yandex_folder(folder_path: str) -> bool:
         logger.error(f"Ошибка при создании/проверке папки {folder_path}: {str(e)}")
         return False
 
+
 def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict[str, str]]:
     folder_path = folder_path.rstrip('/')
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(folder_path)}&fields=_embedded.items.name,_embedded.items.type,_embedded.items.path&limit=100'
@@ -521,9 +593,11 @@ def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict
         logger.error(f"Ошибка при запросе списка элементов: {str(e)}")
         return []
 
+
 def list_yandex_disk_directories(folder_path: str) -> List[str]:
     items = list_yandex_disk_items(folder_path, item_type='dir')
     return [item['name'] for item in items]
+
 
 def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     folder_path = folder_path.rstrip('/')
@@ -532,6 +606,7 @@ def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     files = [item for item in items if item['name'].lower().endswith(supported_extensions)]
     logger.info(f"Найдено {len(files)} файлов в папке {folder_path}")
     return files
+
 
 def get_yandex_disk_file(file_path: str) -> str | None:
     file_path = file_path.rstrip('/')
@@ -550,6 +625,7 @@ def get_yandex_disk_file(file_path: str) -> str | None:
     except Exception as e:
         logger.error(f"Ошибка при запросе файла {file_path}: {str(e)}")
         return None
+
 
 def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str) -> bool:
     folder_path = folder_path.rstrip('/')
@@ -573,15 +649,17 @@ def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str)
         logger.error(f"Ошибка при загрузке файла {file_path}: {str(e)}")
         return False
 
+
 # Инициализация глобальных переменных
 ALLOWED_ADMINS = load_allowed_admins()
 ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
 KNOWLEDGE_BASE = load_knowledge_base()
 
+
 # Функция генерации AI-ответа
 async def generate_ai_response(user_id: int, user_input: str, user_name: str, chat_id: int) -> str:
-    global KNOWLEDGE_BASE
+    global KNOWLEDGE_BASE, histories
     KNOWLEDGE_BASE = load_knowledge_base()  # Перезагружаем базу знаний из Railway
 
     # Подготавливаем все факты для контекста
@@ -605,7 +683,7 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
 Если в базе есть релевантные факты, используй их для ответа. Если фактов нет, четко укажи это и предложи уточнить запрос.
 """
 
-    # Инициализация истории
+    # Инициализация истории для чата
     if chat_id not in histories:
         histories[chat_id] = {"name": user_name, "messages": [{"role": "system", "content": system_content}]}
 
@@ -615,7 +693,8 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
     matching_facts = find_knowledge_facts(user_input, KNOWLEDGE_BASE)
     if matching_facts:
         facts_text = "\n".join(matching_facts)
-        messages.append({"role": "system", "content": f"Релевантные факты для запроса (приоритизируй их): {facts_text}"})
+        messages.append(
+            {"role": "system", "content": f"Релевантные факты для запроса (приоритизируй их): {facts_text}"})
         logger.info(f"Найдено {len(matching_facts)} релевантных фактов для user_id {user_id}: {facts_text[:100]}...")
     else:
         logger.info(f"Нет релевантных фактов для '{user_input}' для user_id {user_id}")
@@ -647,12 +726,14 @@ async def generate_ai_response(user_id: int, user_input: str, user_name: str, ch
     log_request(user_id, user_input, ai_response)
     return ai_response
 
+
 # Функция для получения user_name
 def get_user_name(user_id: int) -> str:
     profile = USER_PROFILES.get(user_id)
     if profile:
         return profile.get("name") or "Пользователь"
     return "Пользователь"
+
 
 # Обработчик команды /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -673,6 +754,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                                         reply_markup=ReplyKeyboardRemove())
     else:
         await show_main_menu(update, context)
+
 
 # Команда /add_fact для добавления фактов (только для админов)
 async def add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -699,6 +781,7 @@ async def add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"{user_name}, факт '{fact}' уже существует в базе знаний.",
                                         reply_markup=ReplyKeyboardRemove())
 
+
 # Команда /delete_fact для удаления фактов (только для админов)
 async def delete_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global KNOWLEDGE_BASE
@@ -718,6 +801,7 @@ async def delete_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
     )
     logger.info(f"Администратор {user_id} запросил удаление факта. Показаны факты:\n{facts_list}")
+
 
 # Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -742,6 +826,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop('awaiting_delete_user_id', None)
     await update.message.reply_text(f"{user_name}, выберите действие:", reply_markup=reply_markup)
 
+
 # Отображение меню управления пользователями
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = update.effective_user.id
@@ -754,6 +839,7 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(f"{user_name}, выберите действие:", reply_markup=reply_markup)
+
 
 # Отображение содержимого папки в /documents/
 async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, is_return: bool = False) -> None:
@@ -785,6 +871,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.message.reply_text(f"{user_name}, {message}", reply_markup=reply_markup)
     else:
         await update.message.reply_text(f"{user_name}, папка {folder_name} пуста.", reply_markup=reply_markup)
+
 
 # Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -848,6 +935,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                                            reply_markup=default_reply_markup)
             logger.error(f"Ошибка при отправке файла: {str(e)}")
 
+
 # Функция для логирования запросов
 def log_request(user_id: int, request: str, response: str) -> None:
     try:
@@ -861,6 +949,7 @@ def log_request(user_id: int, request: str, response: str) -> None:
     except Exception as e:
         logger.error(f"Ошибка при логировании запроса: {str(e)}")
         conn.rollback()
+
 
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1174,6 +1263,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(final_response, reply_markup=default_reply_markup)
         log_request(user_id, user_input, final_response)
 
+
 # Обработка загруженных документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id: int = update.effective_user.id
@@ -1216,6 +1306,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data.pop('awaiting_upload', None)
     await show_main_menu(update, context)
 
+
 # Отображение списка файлов
 async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
     user_id: int = update.effective_user.id
@@ -1242,6 +1333,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
         f"{user_name}, выберите файл для удаления:" if for_deletion else f"{user_name}, список всех файлов:",
         reply_markup=InlineKeyboardMarkup(keyboard))
 
+
 # Основная функция
 def main():
     try:
@@ -1256,6 +1348,7 @@ def main():
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
+
 
 if __name__ == '__main__':
     main()
