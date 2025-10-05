@@ -1327,11 +1327,32 @@ async def main_async():
         raise
 
 
-if __name__ == '__main__':
+def run_bot():
+    """
+    Запускает бота, используя существующий событийный цикл, если он уже активен.
+    """
     try:
-        logger.info("Запуск бота...")
-        asyncio.run(main_async())
-        logger.info("Бот успешно запущен.")
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            logger.info("Событийный цикл уже запущен, используем его.")
+            # Создаем задачу в существующем цикле
+            loop.create_task(main_async())
+        else:
+            logger.info("Запуск нового событийного цикла.")
+            loop.run_until_complete(main_async())
+    except RuntimeError as e:
+        if "no running event loop" in str(e):
+            logger.info("Создаем новый событийный цикл.")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(main_async())
+        else:
+            logger.error(f"Ошибка при запуске цикла: {str(e)}")
+            raise
     except Exception as e:
         logger.error(f"Критическая ошибка при запуске бота: {str(e)}")
         raise
+
+
+if __name__ == '__main__':
+    run_bot()
