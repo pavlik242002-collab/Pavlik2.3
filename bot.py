@@ -16,6 +16,7 @@ from duckduckgo_search import DDGS
 import nltk
 from nltk.tokenize import word_tokenize
 import re
+import asyncio
 
 # Загрузка данных NLTK
 nltk.data.path.append(os.path.join(os.path.dirname(__file__), 'nltk_data'))
@@ -1015,7 +1016,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError:
             await update.message.reply_text(f"{user_name}, введите корректный ID факта (число).",
                                             reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True))
-        return
+            return
 
     if context.user_data.get("awaiting_user_id", False):
         try:
@@ -1335,8 +1336,9 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
 
 
 # Основная функция
-def main():
+async def main_async():
     try:
+        logger.info("Инициализация бота...")
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("add_fact", add_fact))
@@ -1344,11 +1346,34 @@ def main():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+        # Настройка webhook
+        webhook_url = os.getenv("WEBHOOK_URL")
+        if not webhook_url:
+            logger.error("WEBHOOK_URL не указан в .env файле!")
+            raise ValueError("Укажите WEBHOOK_URL в .env")
+
+        await app.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook установлен на {webhook_url}")
+
+        # Запуск приложения в режиме webhook
+        await app.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", 8443)),
+            webhook_url=webhook_url,
+            allowed_updates=Update.ALL_TYPES
+        )
+        logger.info("Бот успешно запущен в режиме webhook.")
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        logger.info("Запуск бота...")
+        asyncio.run(main_async())
+        logger.info("Бот успешно запущен.")
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске бота: {str(e)}")
+        raise
