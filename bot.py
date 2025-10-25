@@ -1790,5 +1790,3 @@ def main() -> None:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
 
-if __name__ == '__main__':
-    main()
