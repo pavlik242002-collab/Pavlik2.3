@@ -1748,33 +1748,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         context.user_data.pop('awaiting_upload', None)
 
-# Функция для проверки и отправки напоминаний о просроченных отчетах
-async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
-    overdue_reports = check_overdue_reports()
-    for report in overdue_reports:
-        user_id = report['user_id']
-        report_id = report['report_id']
-        questions = report['questions']
-        user_name = get_user_name(user_id)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE reports SET reminder_sent_at = NOW() WHERE report_id = %s AND user_id = %s",
-                    (report_id, user_id)
-                )
-                conn.commit()
-            reply_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Заполнить отчет", callback_data=f"start_report:{report_id}")]
-            ])
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"{user_name}, напоминание: вы не заполнили отчет за неделю {datetime.now().isocalendar().week} {datetime.now().year}:\n\n" + "\n".join(questions),
-                reply_markup=reply_markup
-            )
-            logger.info(f"Напоминание отправлено пользователю {user_id} для отчета {report_id}")
-        except Exception as e:
-            logger.error(f"Ошибка при отправке напоминания пользователю {user_id} для отчета {report_id}: {str(e)}")
-
 # Основная функция запуска бота
 def main() -> None:
     try:
@@ -1783,10 +1756,10 @@ def main() -> None:
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         application.add_handler(CallbackQueryHandler(handle_callback_query))
-        application.job_queue.run_repeating(check_reminders, interval=21600, first=60)  # Каждые 6 часов
         logger.info("Бот запущен, начинаю polling...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
         raise
-
+if __name__ == '__main__':
+    main()
